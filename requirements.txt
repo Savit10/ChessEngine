@@ -1,0 +1,20 @@
+# Core chess library
+python-chess>=1.999
+
+# Deep learning framework (choose one or both)
+torch>=2.0.0
+# tensorflow>=2.13.0  # Uncomment if using TensorFlow instead
+
+# Scientific computing
+numpy>=1.24.0
+
+# Data handling
+# pandas>=2.0.0  # Uncomment if needed for data pipeline
+
+# Logging and utilities
+tqdm>=4.65.0  # Progress bars
+
+# Testing (optional but recommended)
+pytest>=7.4.0
+pytest-cov>=4.1.0
+

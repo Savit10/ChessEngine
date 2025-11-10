@@ -79,6 +79,10 @@ Building a chess engine using deep reinforcement learning with Monte Carlo Tree 
 - Repo structure + logs folder
 - Version control setup
 
+**Note**: 
+- Training will be done on Google Colab for GPU access. See `COLAB_SETUP.md` for setup instructions.
+- **Person 3 can work independently!** No need to wait for Person 1 or Person 2. See `INTERFACES.md` for data format specifications.
+
 ---
 
 ## Future Phases (TBD)
@@ -104,15 +108,24 @@ Building a chess engine using deep reinforcement learning with Monte Carlo Tree 
 
 ```
 ChessEngine/
-├── model.py              # Neural network (Person 1)
-├── board_encoding.py     # Board encoding (Person 1)
-├── game.py               # Chess game logic (Person 2)
-├── mcts.py               # MCTS implementation (Person 2)
-├── data_pipeline.py      # Data collection (Person 3)
-├── train_stub.py         # Training loop (Person 3)
-├── logs/                 # Training logs (Person 3)
-├── tests/                # Test scripts
-└── ROADMAP.md            # This file
+├── model.py                    # Neural network (Person 1)
+├── board_encoding.py           # Board encoding (Person 1)
+├── game.py                     # Chess game logic (Person 2)
+├── mcts.py                     # MCTS implementation (Person 2)
+├── data_pipeline.py            # Data collection (Person 3)
+├── train_stub.py               # Training loop (Person 3)
+├── config.py                   # Shared configuration
+├── sync_colab.py               # Colab sync helper
+├── colab_training_template.ipynb # Colab training template
+├── logs/                       # Training logs (Person 3)
+├── data/                       # Training data (Person 3)
+├── models/                     # Saved models
+├── tests/                      # Test scripts
+├── requirements.txt            # Python dependencies
+├── COLAB_SETUP.md              # Colab setup guide
+├── INTERFACES.md                # Component interface specifications
+├── README.md                   # Project overview
+└── ROADMAP.md                  # This file
 ```
 
 ---
@@ -121,4 +134,5 @@ ChessEngine/
 - All Phase 1 components should work with dummy/random outputs
 - Focus on clean interfaces between components
 - Each person should test their component independently before integration
+- **Everyone can work in parallel!** See `INTERFACES.md` for component interface specifications
 
