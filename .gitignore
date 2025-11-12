@@ -73,3 +73,25 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# C++ compiled files
+*.o
+*.a
+*.so
+*.dylib
+
+# C++ executables
+chess_mcts
+chess_example
+tictactoe
+quoridor
+test_fen
+*_test
+*_example
+
+# Debug symbols
+*.dSYM/
+*.dSYM
+
+# Build artifacts
+build/
+cmake-build-*/
