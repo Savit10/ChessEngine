@@ -222,7 +222,10 @@ int main(int argc, char* argv[]) {
             break;
         }
         
-        bool is_user_turn = (white_turn && user_plays_white) || (!white_turn && !user_plays_white);
+        // Determine whose turn it is based on actual board state, not just white_turn flag
+        // This is more reliable since the board state is the source of truth
+        bool is_user_turn = (current_board.sideToMove() == Color::WHITE && user_plays_white) ||
+                           (current_board.sideToMove() == Color::BLACK && !user_plays_white);
         
         if (is_user_turn) {
             // User's turn
@@ -324,7 +327,7 @@ int main(int argc, char* argv[]) {
             const Chess_move* chess_move = static_cast<const Chess_move*>(engine_move);
             string move_str = chess_move->sprint();
             
-            // Convert to SAN BEFORE applying move (need current board state)
+            // Convert to SAN BEFORE engine advances tree (need current board state)
             string san_move;
             try {
                 san_move = chess::uci::moveToSan(current_board, chess_move->move);
@@ -332,11 +335,8 @@ int main(int argc, char* argv[]) {
                 san_move = move_str;  // Fallback to UCI
             }
             
-            // Engine has already advanced its tree (genmove calls advance_tree internally)
-            // So we need to sync current_board with engine's state
-            const MCTS_state* engine_state = engine->get_current_state();
-            const Chess_state* engine_chess_state = static_cast<const Chess_state*>(engine_state);
-            current_board = engine_chess_state->get_board();  // Sync board with engine
+            // Note: Engine has already advanced its tree (genmove calls advance_tree internally)
+            // We'll sync current_board after printing stats
             
             unsigned int estimated_positions = (elapsed >= MAX_SECONDS) ?
                 static_cast<unsigned int>(MAX_ITERATIONS * (elapsed / MAX_SECONDS)) :
@@ -358,6 +358,11 @@ int main(int argc, char* argv[]) {
                  << setw(9) << estimated_positions << " | "
                  << setw(8) << fixed << setprecision(3) << elapsed << " | "
                  << setw(10) << fixed << setprecision(0) << positions_per_sec << endl;
+            
+            // Sync board AFTER engine move (engine has already advanced its tree)
+            const MCTS_state* engine_state_after = engine->get_current_state();
+            const Chess_state* engine_chess_state_after = static_cast<const Chess_state*>(engine_state_after);
+            current_board = engine_chess_state_after->get_board();
             
             cout << "     FEN: " << current_board.getFen() << endl;
         }
