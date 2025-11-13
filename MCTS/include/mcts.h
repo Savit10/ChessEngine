@@ -6,6 +6,11 @@
 #include <vector>
 #include <queue>
 #include <iomanip>
+#include <map>
+#include <string>
+
+// Forward declaration
+class NeuralNetwork;
 
 
 #define STARTING_NUMBER_OF_CHILDREN 32   // expected number so that we can preallocate this many pointers
@@ -33,6 +38,9 @@ class MCTS_node {
     vector<MCTS_node *> *children;
     MCTS_node *parent;
     queue<MCTS_move *> *untried_actions;
+    map<string, double> policy_priors;  // Prior probabilities from NN (keyed by move UCI string)
+    double nn_value;                    // Value from NN (initialized when node is expanded)
+    bool has_nn_evaluation;            // Whether this node has been evaluated by NN
     void backpropagate(double w, int n);
 public:
     MCTS_node(MCTS_node *parent, MCTS_state *state, const MCTS_move *move);
@@ -41,29 +49,34 @@ public:
     bool is_terminal() const;
     const MCTS_move *get_move() const;
     unsigned int get_size() const;
-    void expand();
-    void rollout();
-    MCTS_node *select_best_child(double c) const;
+    void expand(NeuralNetwork* nn = nullptr);  // Pass NN for evaluation
+    void rollout();  // Keep for backward compatibility, but won't be used with NN
+    MCTS_node *select_best_child(double cpuct) const;  // cpuct is the exploration constant
     MCTS_node *advance_tree(const MCTS_move *m);
     const MCTS_state *get_current_state() const;
     void print_stats() const;
     double calculate_winrate(bool player1turn) const;
+    double get_prior(const MCTS_move* move) const;  // Get prior probability for a move
 };
 
 
 
 class MCTS_tree {
     MCTS_node *root;
+    NeuralNetwork* nn_;  // Neural network for evaluation
+    double cpuct_;       // PUCT exploration constant
 public:
-    MCTS_tree(MCTS_state *starting_state);
+    MCTS_tree(MCTS_state *starting_state, NeuralNetwork* nn = nullptr, double cpuct = 1.0);
     ~MCTS_tree();
-    MCTS_node *select(double c=1.41);        // select child node to expand according to tree policy (UCT)
+    MCTS_node *select(double c=1.41);        // select child node to expand according to tree policy (PUCT)
     MCTS_node *select_best_child();          // select the most promising child of the root node
     void grow_tree(int max_iter, double max_time_in_seconds);
     void advance_tree(const MCTS_move *move);      // if the move is applicable advance the tree, else start over
     unsigned int get_size() const;
     const MCTS_state *get_current_state() const;
     void print_stats() const;
+    void set_neural_network(NeuralNetwork* nn) { nn_ = nn; }
+    void set_cpuct(double cpuct) { cpuct_ = cpuct; }
 };
 
 
@@ -71,7 +84,8 @@ class MCTS_agent {                           // example of an agent based on the
     MCTS_tree *tree;
     int max_iter, max_seconds;
 public:
-    MCTS_agent(MCTS_state *starting_state, int max_iter = 100000, int max_seconds = 30);
+    MCTS_agent(MCTS_state *starting_state, int max_iter = 100000, int max_seconds = 30, 
+               NeuralNetwork* nn = nullptr, double cpuct = 1.0);
     ~MCTS_agent();
     const MCTS_move *genmove(const MCTS_move *enemy_move);
     const MCTS_state *get_current_state() const;

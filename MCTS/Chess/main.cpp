@@ -5,10 +5,12 @@
 
 #include "Chess.h"
 #include "../include/mcts.h"
+#include "../include/neural_network.h"
 #include <iostream>
 #include <iomanip>
 #include <ctime>
 #include <chrono>
+#include <string>
 
 using namespace std;
 using namespace chess;
@@ -22,21 +24,51 @@ struct MoveStats {
     string player;
 };
 
-int main() {
+int main(int argc, char* argv[]) {
     // Configuration
     const int MAX_ITERATIONS = 5000;  // Reduced for faster games
     const int MAX_SECONDS = 2;         // Reduced for faster games
     const int MAX_MOVES = 1000;  // Safety limit (game will stop naturally at checkmate/draw before this)
+    const double CPUCT = 1.0;  // PUCT exploration constant
+    
+    // Neural network model path (default or from command line)
+    string model_path = "../aznet_traced.pt";
+    if (argc > 1) {
+        model_path = argv[1];
+    }
     
     cout << "=== MCTS Chess Engine Self-Play ===" << endl;
     cout << "Config: " << MAX_ITERATIONS << " iterations or " << MAX_SECONDS << " seconds per move" << endl;
+    cout << "CPUCT: " << CPUCT << endl;
     cout << "====================================" << endl << endl;
+    
+    // Load neural network
+    NeuralNetwork* nn = new NeuralNetwork();
+    bool nn_loaded = false;
+    if (!model_path.empty()) {
+        cout << "Loading neural network from: " << model_path << endl;
+        nn_loaded = nn->load_model(model_path);
+        if (!nn_loaded) {
+            cout << "Warning: Failed to load neural network. Falling back to heuristic rollouts." << endl;
+        } else {
+            cout << "Neural network loaded successfully!" << endl;
+        }
+    } else {
+        cout << "No model path provided. Using heuristic rollouts." << endl;
+    }
+    cout << endl;
     
     // Create initial state
     Chess_state* initial_state = new Chess_state();
     
-    // Create first agent (white)
-    MCTS_agent* white_agent = new MCTS_agent(initial_state, MAX_ITERATIONS, MAX_SECONDS);
+    // Create first agent (white) - pass NN if loaded
+    MCTS_agent* white_agent = new MCTS_agent(
+        initial_state, 
+        MAX_ITERATIONS, 
+        MAX_SECONDS,
+        nn_loaded ? nn : nullptr,
+        CPUCT
+    );
     
     // For black, we'll create it after white's first move
     MCTS_agent* black_agent = nullptr;
@@ -64,14 +96,20 @@ int main() {
         
         // Create black agent after white's first move
         bool is_black_first_move = false;
-        if (!black_agent && !white_turn && last_move) {
-            // Create black agent from the position after white's move
-            const MCTS_state* current_state = white_agent->get_current_state();
-            Chess_state* black_start = new Chess_state(*static_cast<const Chess_state*>(current_state));
-            black_agent = new MCTS_agent(black_start, MAX_ITERATIONS, MAX_SECONDS);
-            current_agent = black_agent;
-            is_black_first_move = true;
-        }
+            if (!black_agent && !white_turn && last_move) {
+                // Create black agent from the position after white's move
+                const MCTS_state* current_state = white_agent->get_current_state();
+                Chess_state* black_start = new Chess_state(*static_cast<const Chess_state*>(current_state));
+                black_agent = new MCTS_agent(
+                    black_start, 
+                    MAX_ITERATIONS, 
+                    MAX_SECONDS,
+                    nn_loaded ? nn : nullptr,
+                    CPUCT
+                );
+                current_agent = black_agent;
+                is_black_first_move = true;
+            }
         
         // Get current state to check if game is over
         const MCTS_state* current_state = current_agent->get_current_state();
@@ -324,6 +362,7 @@ int main() {
     // Cleanup
     delete white_agent;
     if (black_agent) delete black_agent;
+    delete nn;
     
     return 0;
 }
