@@ -93,7 +93,7 @@ int main(int argc, char* argv[]) {
     const int MAX_ITERATIONS = 5000;
     const int MAX_SECONDS = 2;
     const int MAX_MOVES = 1000;
-    const double CPUCT = 1.0;
+    const double CPUCT = 2.0;
     
     // Neural network model path
     string model_path = "../aznet_traced.pt";

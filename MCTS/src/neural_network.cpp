@@ -4,6 +4,11 @@
 #include <fstream>
 #include <cmath>
 #include <algorithm>
+#include <vector>
+#include <utility>
+#include <iomanip>
+#include <ctime>
+#include <sstream>
 #include <torch/script.h>
 #include <torch/torch.h>
 
@@ -27,11 +32,21 @@ int NeuralNetwork::move_to_policy_index(const Move& move) const {
     Square from = move.from();
     Square to = move.to();
     
-    // Convert square to index (0-63)
-    int from_idx = from.index();
-    int to_idx = to.index();
+    // MATCH PYTHON: move_to_index(move) = move.from_square * 64 + move.to_square
+    // where from_square/to_square are python-chess indices (0-63)
+    // 
+    // chess.hpp Square::index() matches python-chess exactly:
+    // - A1 = 0, B1 = 1, ..., H1 = 7
+    // - A2 = 8, ..., H8 = 63
+    // So we can use index() directly, but let's be explicit with rank/file to match Python's row/col
     
-    // Policy index = from_square * 64 + to_square
+    // Python: row = square // 8, col = square % 8
+    // chess.hpp: rank = index() >> 3, file = index() & 7
+    // So: idx = rank * 8 + file = index() (they're equivalent)
+    int from_idx = from.index();  // This matches python-chess square index
+    int to_idx = to.index();      // This matches python-chess square index
+    
+    // Policy index = from_square * 64 + to_square (matches Python exactly)
     // Note: Promotions are NOT included in the 4096-dim policy
     // They will need to be handled separately or the model needs to be retrained
     int policy_idx = from_idx * 64 + to_idx;
@@ -43,6 +58,10 @@ std::vector<float> NeuralNetwork::encode_board(const Board& board) const {
     // Encode board as 12-channel 8x8 tensor
     // Channels: [white_pawn, white_knight, white_bishop, white_rook, white_queen, white_king,
     //            black_pawn, black_knight, black_bishop, black_rook, black_queen, black_king]
+    // 
+    // IMPORTANT: This must match Python's board_to_matrix() exactly:
+    // - Python: row = square // 8, col = square % 8, mat[plane, row, col] = 1
+    // - No vertical flipping! rank 0 = rank 1 (white's first rank)
     
     std::vector<float> tensor(12 * 8 * 8, 0.0f);
     
@@ -71,8 +90,11 @@ std::vector<float> NeuralNetwork::encode_board(const Board& board) const {
             // White: channels 0-5, Black: channels 6-11
             channel = (color == Color::WHITE) ? piece_idx : (piece_idx + 6);
             
-            // Set value in tensor (rank 7-rank because board is stored with rank 7 at top)
-            int tensor_idx = channel * 64 + (7 - rank) * 8 + file;
+            // MATCH PYTHON: row = rank, col = file (NO FLIPPING!)
+            // Python: idx64 = row * 8 + col where row = square // 8, col = square % 8
+            // chess.hpp: Square::index() = file + rank * 8, which matches python-chess
+            int idx64 = rank * 8 + file;
+            int tensor_idx = channel * 64 + idx64;
             tensor[tensor_idx] = 1.0f;
         }
     }
@@ -107,7 +129,7 @@ bool NeuralNetwork::predict(const Board& board,
                             std::map<std::string, double>& policy_out,
                             double& value_out) {
     if (!loaded_) {
-        std::cerr << "Error: Model not loaded" << std::endl;
+        std::cerr << "ERROR: Neural network model not loaded. Cannot predict." << std::endl;
         return false;
     }
     
@@ -131,7 +153,8 @@ bool NeuralNetwork::predict(const Board& board,
         torch::Tensor value_tensor = outputs->elements()[1].toTensor();   // Shape: (1,)
         
         // 3. Extract value (convert from [-1, 1] to [0, 1] for white's perspective)
-        value_out = value_tensor.item<float>();
+        double raw_value = value_tensor.item<float>();  // Raw value from model (from current player's perspective)
+        value_out = raw_value;
         
         // Convert value from current player's perspective to white's perspective
         if (board.sideToMove() == Color::BLACK) {
@@ -149,7 +172,7 @@ bool NeuralNetwork::predict(const Board& board,
         movegen::legalmoves(legal_moves, board);
         
         if (legal_moves.empty()) {
-            std::cerr << "Warning: No legal moves in position" << std::endl;
+            std::cerr << "ERROR: No legal moves in position. Cannot predict policy." << std::endl;
             return false;
         }
         
@@ -203,14 +226,101 @@ bool NeuralNetwork::predict(const Board& board,
             }
         }
         
+        // ========== LOGGING: Policy and Value ==========
+        // Open log file (append mode)
+        static std::ofstream log_file;
+        static bool log_file_opened = false;
+        
+        if (!log_file_opened) {
+            // Create log file with timestamp in name
+            std::time_t now = std::time(nullptr);
+            std::tm* local_time = std::localtime(&now);
+            std::ostringstream filename;
+            filename << "nn_inference_" 
+                     << std::setfill('0') << std::setw(4) << (1900 + local_time->tm_year)
+                     << std::setw(2) << (local_time->tm_mon + 1)
+                     << std::setw(2) << local_time->tm_mday << "_"
+                     << std::setw(2) << local_time->tm_hour
+                     << std::setw(2) << local_time->tm_min
+                     << std::setw(2) << local_time->tm_sec << ".log";
+            log_file.open(filename.str(), std::ios::app);
+            log_file_opened = true;
+            if (log_file.is_open()) {
+                log_file << "=== Neural Network Inference Log ===" << std::endl;
+                log_file << "Started: " << std::asctime(local_time) << std::endl;
+                log_file << "=====================================" << std::endl << std::endl;
+            }
+        }
+        
+        // Helper lambda to write to both stderr and file
+        auto log_line = [&](const std::string& line) {
+            std::cerr << line << std::endl;
+            if (log_file.is_open()) {
+                log_file << line << std::endl;
+            }
+        };
+        
+        // Get current FEN for context
+        std::string fen = board.getFen();
+        
+        log_line("\n=== NN Inference Results ===");
+        log_line("FEN: " + fen);
+        log_line("Side to move: " + std::string(board.sideToMove() == Color::WHITE ? "White" : "Black"));
+        
+        // Log value
+        std::ostringstream value_line1, value_line2;
+        value_line1 << "Value (raw from model): " << std::fixed << std::setprecision(4) << raw_value 
+                    << " (from " << (board.sideToMove() == Color::WHITE ? "White" : "Black") << "'s perspective)";
+        value_line2 << "Value (normalized to [0,1] from White's perspective): " << std::fixed << std::setprecision(4) << value_out;
+        log_line(value_line1.str());
+        log_line(value_line2.str());
+        
+        // Log top policy moves
+        std::vector<std::pair<std::string, double>> policy_vec(policy_out.begin(), policy_out.end());
+        std::sort(policy_vec.begin(), policy_vec.end(), 
+                  [](const std::pair<std::string, double>& a, const std::pair<std::string, double>& b) {
+                      return a.second > b.second;
+                  });
+        
+        log_line("Top 15 policy moves:");
+        int top_n = std::min(15, static_cast<int>(policy_vec.size()));
+        for (int i = 0; i < top_n; i++) {
+            std::ostringstream move_line;
+            move_line << "  " << std::setw(2) << (i+1) << ". " << std::setw(6) << policy_vec[i].first 
+                      << " : " << std::fixed << std::setprecision(4) << policy_vec[i].second 
+                      << " (" << std::fixed << std::setprecision(2) << (policy_vec[i].second * 100.0) << "%)";
+            log_line(move_line.str());
+        }
+        
+        // Log policy statistics
+        if (!policy_vec.empty()) {
+            double max_prob = policy_vec[0].second;
+            double sum_top3 = 0.0;
+            for (int i = 0; i < std::min(3, static_cast<int>(policy_vec.size())); i++) {
+                sum_top3 += policy_vec[i].second;
+            }
+            std::ostringstream stats_line;
+            stats_line << "Policy stats: max=" << std::fixed << std::setprecision(4) << max_prob 
+                      << ", top3_sum=" << std::fixed << std::setprecision(4) << sum_top3
+                      << ", legal_moves=" << legal_moves.size();
+            log_line(stats_line.str());
+        }
+        
+        log_line("============================");
+        
+        // Flush file to ensure data is written
+        if (log_file.is_open()) {
+            log_file.flush();
+        }
+        
         return true;
     }
     catch (const c10::Error& e) {
-        std::cerr << "Error during inference: " << e.what() << std::endl;
+        std::cerr << "ERROR: Neural network inference failed (PyTorch error): " << e.what() << std::endl;
         return false;
     }
     catch (const std::exception& e) {
-        std::cerr << "Error during inference: " << e.what() << std::endl;
+        std::cerr << "ERROR: Neural network inference failed (exception): " << e.what() << std::endl;
         return false;
     }
 }

@@ -66,30 +66,39 @@ void MCTS_node::expand(NeuralNetwork* nn) {
         return;
     }
     
-    // If this is a leaf node and we have NN, evaluate it
-    if (!has_nn_evaluation && nn != nullptr && children->empty()) {
-        Chess_state* chess_state = dynamic_cast<Chess_state*>(state);
-        if (chess_state) {
-            // Call neural network: (policy, value) = f_θ(s)
-            map<string, double> policy_map;
-            double value;
-            
-            if (nn->predict(chess_state->get_board(), policy_map, value)) {
-                // Store policy priors and value
-                policy_priors = policy_map;
-                nn_value = value;
-                has_nn_evaluation = true;
+    // If this is a leaf node, evaluate it (either with NN or rollout)
+    if (!has_nn_evaluation && children->empty()) {
+        if (nn != nullptr) {
+            // Try to use neural network
+            Chess_state* chess_state = dynamic_cast<Chess_state*>(state);
+            if (chess_state) {
+                // Call neural network: (policy, value) = f_θ(s)
+                map<string, double> policy_map;
+                double value;
                 
-                // Backpropagate the value immediately
-                backpropagate(nn_value, 1);
+                if (nn->predict(chess_state->get_board(), policy_map, value)) {
+                    // Store policy priors and value
+                    policy_priors = policy_map;
+                    nn_value = value;
+                    has_nn_evaluation = true;
+                    
+                    // Backpropagate the value immediately
+                    backpropagate(nn_value, 1);
+                } else {
+                    // NN failed, fallback to rollout
+                    cerr << "WARNING: Neural network prediction failed for position. Falling back to heuristic rollout." << endl;
+                    nn_value = state->rollout();
+                    has_nn_evaluation = true;
+                    backpropagate(nn_value, 1);
+                }
             } else {
-                // NN failed, fallback to rollout
+                // Not a chess state, use rollout
                 nn_value = state->rollout();
                 has_nn_evaluation = true;
                 backpropagate(nn_value, 1);
             }
         } else {
-            // Not a chess state, use rollout
+            // No NN available, use rollout
             nn_value = state->rollout();
             has_nn_evaluation = true;
             backpropagate(nn_value, 1);
@@ -122,8 +131,9 @@ void MCTS_node::expand(NeuralNetwork* nn) {
         }
     }
     
-    // If child is terminal, evaluate it immediately
+    // Evaluate child node immediately (terminal or non-terminal)
     if (new_node->is_terminal()) {
+        // Terminal node: use actual game result
         Chess_state* child_chess_state = dynamic_cast<Chess_state*>(new_node->state);
         if (child_chess_state) {
             auto [reason, result] = child_chess_state->get_board().isGameOver();
@@ -139,9 +149,40 @@ void MCTS_node::expand(NeuralNetwork* nn) {
             new_node->has_nn_evaluation = true;
             new_node->backpropagate(child_value, 1);
         }
-    } else if (has_nn_evaluation) {
-        // Non-terminal child: will be evaluated when expanded
-        // For now, just add it
+    } else {
+        // Non-terminal child: evaluate with rollout (or NN if available)
+        if (nn != nullptr) {
+            // Try NN first
+            Chess_state* child_chess_state = dynamic_cast<Chess_state*>(new_node->state);
+            if (child_chess_state) {
+                map<string, double> policy_map;
+                double value;
+                if (nn->predict(child_chess_state->get_board(), policy_map, value)) {
+                    new_node->policy_priors = policy_map;
+                    new_node->nn_value = value;
+                    new_node->has_nn_evaluation = true;
+                    new_node->backpropagate(value, 1);
+                } else {
+                    // NN failed, use rollout
+                    double rollout_value = new_node->state->rollout();
+                    new_node->nn_value = rollout_value;
+                    new_node->has_nn_evaluation = true;
+                    new_node->backpropagate(rollout_value, 1);
+                }
+            } else {
+                // Not chess state, use rollout
+                double rollout_value = new_node->state->rollout();
+                new_node->nn_value = rollout_value;
+                new_node->has_nn_evaluation = true;
+                new_node->backpropagate(rollout_value, 1);
+            }
+        } else {
+            // No NN, use rollout
+            double rollout_value = new_node->state->rollout();
+            new_node->nn_value = rollout_value;
+            new_node->has_nn_evaluation = true;
+            new_node->backpropagate(rollout_value, 1);
+        }
     }
     
     // Add new node to tree
@@ -230,17 +271,34 @@ MCTS_node *MCTS_node::select_best_child(double cpuct) const {
             // If no prior found, use uniform (1/num_children)
             if (P == 0.0) {
                 P = 1.0 / children->size();
+                // Log when prior is missing (only once per node to avoid spam)
+                static bool logged_missing_prior = false;
+                if (!logged_missing_prior && parent != nullptr && parent->has_nn_evaluation) {
+                    Chess_move* chess_move = dynamic_cast<Chess_move*>(const_cast<MCTS_move*>(child->move));
+                    if (chess_move) {
+                        cerr << "WARNING: No prior found for move " << chess_move->sprint() 
+                             << ". Using uniform prior. (This may happen for promotions or if NN failed)" << endl;
+                        logged_missing_prior = true;  // Only log once to avoid spam
+                    }
+                }
             }
             
             // N(s,a) = visit count for this child
             unsigned int N_a = child->number_of_simulations;
             
-            // PUCT formula
+            // PUCT formula (or UCT if no prior)
             if (cpuct > 0 && number_of_simulations > 0) {
-                double sqrt_term = sqrt((double)(sum_visits + 1)) / (1.0 + N_a);
-                puct_score = Q + cpuct * P * sqrt_term;
+                if (P > 0.0) {
+                    // PUCT: use prior probability
+                    double sqrt_term = sqrt((double)(sum_visits + 1)) / (1.0 + N_a);
+                    puct_score = Q + cpuct * P * sqrt_term;
+                } else {
+                    // UCT: no prior, use standard UCB exploration
+                    double sqrt_term = sqrt(log((double)number_of_simulations) / (1.0 + N_a));
+                    puct_score = Q + cpuct * sqrt_term;
+                }
             } else {
-                puct_score = Q;  // Pure exploitation
+                puct_score = Q;  // Pure exploitation (shouldn't happen with proper cpuct)
             }
             
             if (puct_score > max) {
@@ -410,8 +468,9 @@ void MCTS_tree::advance_tree(const MCTS_move *move) {
 const MCTS_state *MCTS_tree::get_current_state() const { return root->get_current_state(); }
 
 MCTS_node *MCTS_tree::select_best_child() {
-    // Use cpuct_ if NN is available, otherwise use 0.0 (pure exploitation)
-    double exploration = (nn_ != nullptr) ? cpuct_ : 0.0;
+    // Use cpuct_ if NN is available, otherwise use UCT constant (1.41) for exploration
+    // This ensures exploration even without NN priors
+    double exploration = (nn_ != nullptr) ? cpuct_ : 1.41;
     return root->select_best_child(exploration);
 }
 
