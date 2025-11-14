@@ -16,7 +16,7 @@ using namespace std;
 /*** MCTS NODE ***/
 MCTS_node::MCTS_node(MCTS_node *parent, MCTS_state *state, const MCTS_move *move)
         : parent(parent), state(state), move(move), score(0.0), number_of_simulations(0), size(0),
-          nn_value(0.0), has_nn_evaluation(false) {
+          nn_value(0.0), raw_nn_value(0.0), has_nn_evaluation(false) {
     children = new vector<MCTS_node *>();
     children->reserve(STARTING_NUMBER_OF_CHILDREN);
     untried_actions = state->actions_to_try();
@@ -56,21 +56,31 @@ double MCTS_node::evaluate(NeuralNetwork* nn) {
         return nn_value;
     }
 
-    double value = 0.5;
+    double value = 0.0;  // Default to draw (0.0 in [-1, +1] range)
 
     if (is_terminal()) {
         Chess_state* chess_state = dynamic_cast<Chess_state*>(state);
         if (chess_state) {
             auto [reason, result] = chess_state->get_board().isGameOver();
+            // Return value in [-1, +1] range from current player's perspective
             if (result == GameResult::DRAW) {
-                value = 0.5;
+                value = 0.0;  // Draw = 0.0 (was 0.5 in [0,1] range)
             } else if (result == GameResult::WIN) {
-                value = (chess_state->get_board().sideToMove() == Color::WHITE) ? 0.0 : 1.0;
+                value = 1.0;  // Current player wins = +1.0
             } else if (result == GameResult::LOSE) {
-                value = (chess_state->get_board().sideToMove() == Color::WHITE) ? 1.0 : 0.0;
+                value = -1.0;  // Current player loses = -1.0
             }
         } else {
-            value = state->rollout();
+            // Rollout returns [0, 1] from white's perspective, convert to [-1, +1] from current player's perspective
+            double rollout_value = state->rollout();
+            bool is_white_turn = state->player1_turn();
+            if (is_white_turn) {
+                // White's perspective: [0, 1] -> [-1, +1]
+                value = 2.0 * rollout_value - 1.0;
+            } else {
+                // Black's perspective: flip [0, 1] -> [-1, +1]
+                value = 1.0 - 2.0 * rollout_value;
+            }
         }
         nn_value = value;
         has_nn_evaluation = true;
@@ -82,9 +92,11 @@ double MCTS_node::evaluate(NeuralNetwork* nn) {
         if (chess_state) {
             map<string, double> policy_map;
             double network_value;
-            if (nn->predict(chess_state->get_board(), policy_map, network_value)) {
+            double raw_network_value;
+            if (nn->predict(chess_state->get_board(), policy_map, network_value, raw_network_value)) {
                 policy_priors = policy_map;
-                nn_value = network_value;
+                raw_nn_value = raw_network_value;  // Store raw value before tanh
+                nn_value = network_value;  // Store tanh'd value
                 has_nn_evaluation = true;
                 // Debug: log root node policy (ALWAYS, not just when parent is null, to catch root)
                 static bool root_logged = false;
@@ -104,7 +116,16 @@ double MCTS_node::evaluate(NeuralNetwork* nn) {
         }
     }
 
-    value = state->rollout();
+    // Rollout returns [0, 1] from white's perspective, convert to [-1, +1] from current player's perspective
+    double rollout_value = state->rollout();
+    bool is_white_turn = state->player1_turn();
+    if (is_white_turn) {
+        // White's perspective: [0, 1] -> [-1, +1]
+        value = 2.0 * rollout_value - 1.0;
+    } else {
+        // Black's perspective: flip [0, 1] -> [-1, +1]
+        value = 1.0 - 2.0 * rollout_value;
+    }
     nn_value = value;
     has_nn_evaluation = true;
     return value;
@@ -124,24 +145,34 @@ void MCTS_node::rollout() {
     double score_sum = 0.0;
     for (int i = 0 ; i < NUMBER_OF_THREADS ; i++) {
         if (results[i] >= 0.0 && results[i] <= 1.0){
-            score_sum += results[i];
+            // Convert [0, 1] from white's perspective to [-1, +1] from current player's perspective
+            double rollout_value = results[i];
+            bool is_white_turn = state->player1_turn();
+            double value = is_white_turn ? (2.0 * rollout_value - 1.0) : (1.0 - 2.0 * rollout_value);
+            score_sum += value;
         } else {    // should not happen
             cerr << "Warning: Invalid result when aggregating parallel rollouts" << endl;
         }
     }
     backpropagate(score_sum, NUMBER_OF_THREADS);
 #else
-    double w = state->rollout();
+    // Rollout returns [0, 1] from white's perspective, convert to [-1, +1] from current player's perspective
+    double rollout_value = state->rollout();
+    bool is_white_turn = state->player1_turn();
+    double w = is_white_turn ? (2.0 * rollout_value - 1.0) : (1.0 - 2.0 * rollout_value);
     backpropagate(w, 1);
 #endif
 }
 
 void MCTS_node::backpropagate(double w, int n) {
+    // w is value from current player's perspective in [-1, +1] range
     score += w;
     number_of_simulations += n;
     if (parent != NULL) {
         parent->size++;
-        parent->backpropagate(w, n);
+        // CRITICAL: Flip value sign when going up to parent (opponent's perspective)
+        // If current player sees +1.0 (winning), opponent sees -1.0 (losing)
+        parent->backpropagate(-w, n);
     }
 }
 
@@ -180,7 +211,8 @@ MCTS_node *MCTS_node::select_best_child(double cpuct) const {
         vector<pair<string, tuple<double, double, double, double>>> scores; // move, (Q, P, N_a, puct_score)
         
         for (auto *child : *children) {
-            // Q(s,a) = average value (winrate from current player's perspective)
+            // Q(s,a) = average value from current player's perspective in [-1, +1] range
+            // +1.0 = current player winning, -1.0 = current player losing, 0.0 = draw
             double Q = 0.0;
             if (child->number_of_simulations > 0) {
                 Q = child->score / ((double) child->number_of_simulations);
@@ -419,8 +451,14 @@ void MCTS_node::print_stats() const {
     cout << "___ INFO _______________________" << endl
          << "Tree size: " << size << endl
          << "Number of simulations: " << number_of_simulations << endl
-         << "Branching factor at root: " << children->size() << endl
-         << "Chances of P1 winning: " << setprecision(4) << 100.0 * (score / number_of_simulations) << "%" << endl;
+         << "Branching factor at root: " << children->size() << endl;
+    if (number_of_simulations > 0) {
+        double avg_value = score / number_of_simulations;  // In [-1, +1] range
+        double winrate = state->player1_turn() ? (avg_value + 1.0) / 2.0 : (1.0 - avg_value) / 2.0;
+        cout << "Chances of P1 winning: " << setprecision(4) << 100.0 * winrate << "%" << endl;
+    } else {
+        cout << "Chances of P1 winning: 50.00%" << endl;
+    }
     // sort children based on winrate of player's turn for this node (!)
     if (state->player1_turn()) {
         std::sort(children->begin(), children->end(), [](const MCTS_node *n1, const MCTS_node *n2){
@@ -441,10 +479,21 @@ void MCTS_node::print_stats() const {
 }
 
 double MCTS_node::calculate_winrate(bool player1turn) const {
-    if (player1turn) {
-        return score / number_of_simulations;
+    if (number_of_simulations == 0) return 0.5; // Avoid division by zero
+    // Score is accumulated in [-1, +1] range from the perspective of the player to move at this node
+    // We want winrate [0, 1] from the perspective of 'player1turn'
+    double avg_value = score / number_of_simulations;  // In [-1, +1] range
+    
+    if (state->player1_turn() == player1turn) {
+        // Score is already from the desired player's perspective
+        // Convert [-1, +1] -> [0, 1]: (value + 1.0) / 2.0
+        return (avg_value + 1.0) / 2.0;
     } else {
-        return 1.0 - score / number_of_simulations;
+        // Score is from opponent's perspective, flip it
+        // If opponent sees +1.0 (opponent winning), we see -1.0 (we losing) -> winrate = 0.0
+        // If opponent sees -1.0 (opponent losing), we see +1.0 (we winning) -> winrate = 1.0
+        // So: winrate = (1.0 - opponent_value) / 2.0 = (1.0 - avg_value) / 2.0
+        return (1.0 - avg_value) / 2.0;
     }
 }
 

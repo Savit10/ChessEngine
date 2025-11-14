@@ -47,10 +47,9 @@ struct Chess_move : public MCTS_move {
 class Chess_state : public MCTS_state {
 private:
     Board board_;
-    
-    // Helper: Evaluate position from white's perspective
-    // Returns: 1.0 (white winning) to 0.0 (black winning), 0.5 (equal)
-    static double evaluate_position(const Board& board);
+    Move last_move_;           // Last move that led to this state
+    Piece captured_piece_;     // Piece that was captured (if any)
+    bool was_capture_;         // Whether last move was a capture
     
 public:
     // Constructors
@@ -69,6 +68,14 @@ public:
     // Access to underlying board (useful for debugging)
     const Board& get_board() const { return board_; }
     Board& get_board() { return board_; }
+    
+    // Check if the move that led to this state was a capture
+    bool was_capture() const;
+    
+    // Get the value of the captured piece (if any)
+    // Returns: 9=queen, 5=rook, 3=bishop/knight, 1=pawn, 0=no capture
+    // Note: This is only for debug output, not used in evaluation
+    int captured_piece_value() const;
 };
 
 #endif // MCTS_CHESS_H

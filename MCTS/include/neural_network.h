@@ -51,9 +51,10 @@ public:
      * @param value_out Output: position value in [0, 1] from white's perspective
      * @return true if successful
      */
-    bool predict(const Board& board, 
-                 std::map<std::string, double>& policy_out, 
-                 double& value_out);
+    bool predict(const Board& board,
+                std::map<std::string, double>& policy_out,
+                double& value_out,
+                double& raw_value_out);  // Raw value before tanh
     
     bool is_loaded() const { return loaded_; }
 };

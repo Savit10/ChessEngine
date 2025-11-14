@@ -120,8 +120,26 @@ int main(int argc, char* argv[]) {
     }
     cout << endl;
     
+    // Ask for starting position (FEN) or use default
+    cout << "Enter starting FEN (or press Enter for default starting position): ";
+    string fen_input;
+    getline(cin, fen_input);
+    
+    // Trim whitespace
+    fen_input.erase(0, fen_input.find_first_not_of(" \t\n\r"));
+    fen_input.erase(fen_input.find_last_not_of(" \t\n\r") + 1);
+    
+    string starting_fen;
+    if (fen_input.empty()) {
+        starting_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        cout << "Using default starting position." << endl;
+    } else {
+        starting_fen = fen_input;
+        cout << "Using FEN: " << starting_fen << endl;
+    }
+    
     // Ask user which color they want to play
-    cout << "Choose your color:" << endl;
+    cout << "\nChoose your color:" << endl;
     cout << "1. White (you move first)" << endl;
     cout << "2. Black (engine moves first)" << endl;
     cout << "Enter choice (1 or 2): ";
@@ -130,8 +148,8 @@ int main(int argc, char* argv[]) {
     getline(cin, choice);
     bool user_plays_white = (choice == "1" || choice == "w" || choice == "white");
     
-    // Create initial state
-    Chess_state* initial_state = new Chess_state();
+    // Create initial state from FEN
+    Chess_state* initial_state = new Chess_state(starting_fen);
     Board current_board(initial_state->get_board().getFen());
     
     // Create engine agent
@@ -324,6 +342,32 @@ int main(int argc, char* argv[]) {
             if (!engine_move) {
                 cout << "Error: Engine returned no move!" << endl;
                 break;
+            }
+            
+            // Debug: Print root children information
+            MCTS_tree* tree = engine->get_tree();
+            MCTS_node* root = tree->get_root();
+            if (root && root->get_children()) {
+                cout << "\n=== Root Children Debug ===" << endl;
+                for (auto *c : *root->get_children()) {
+                    string uci = c->get_move() ? c->get_move()->sprint() : "NULL";
+                    const Chess_state* chess_state = dynamic_cast<const Chess_state*>(c->get_current_state());
+                    bool is_capture = false;
+                    int captured_value = 0;
+                    if (chess_state) {
+                        is_capture = chess_state->was_capture();
+                        captured_value = chess_state->captured_piece_value();
+                    }
+                    bool is_terminal = c->is_terminal();
+                    double raw_nn = c->get_raw_nn_value();
+                    double node_v = c->get_nn_value();
+                    double Q = (c->get_number_of_simulations() > 0) ? c->get_score() / (double)c->get_number_of_simulations() : 0.0;
+                    double P = root->get_prior(c->get_move());
+                    cout << uci << "  cap=" << is_capture << " cap_val=" << captured_value 
+                         << " term=" << is_terminal << " raw_nn=" << raw_nn << " nn_val=" << node_v
+                         << " P=" << P << " Q=" << Q << " N=" << c->get_number_of_simulations() << endl;
+                }
+                cout << "===========================" << endl;
             }
             
             const Chess_move* chess_move = static_cast<const Chess_move*>(engine_move);

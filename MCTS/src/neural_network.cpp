@@ -62,16 +62,24 @@ int NeuralNetwork::move_to_policy_index(const Move& move) const {
 }
 
 std::vector<float> NeuralNetwork::encode_board(const Board& board) const {
-    // Encode board as 12-channel 8x8 tensor
-    // Channels: [white_pawn, white_knight, white_bishop, white_rook, white_queen, white_king,
-    //            black_pawn, black_knight, black_bishop, black_rook, black_queen, black_king]
+    // Encode board as 18-channel 8x8 tensor
+    // Channels 0-11: Piece planes (same as before)
+    //   [white_pawn, white_knight, white_bishop, white_rook, white_queen, white_king,
+    //    black_pawn, black_knight, black_bishop, black_rook, black_queen, black_king]
+    // Channel 12: Side to move (1.0 for white, 0.0 for black) - full 8x8 plane
+    // Channel 13: White kingside castling rights (1.0 if available, 0.0 otherwise) - full 8x8 plane
+    // Channel 14: White queenside castling rights - full 8x8 plane
+    // Channel 15: Black kingside castling rights - full 8x8 plane
+    // Channel 16: Black queenside castling rights - full 8x8 plane
+    // Channel 17: En passant target square (1.0 at the square, 0.0 elsewhere) - full 8x8 plane
     // 
     // IMPORTANT: This must match Python's board_to_matrix() exactly:
     // - Python: row = square // 8, col = square % 8, mat[plane, row, col] = 1
     // - No vertical flipping! rank 0 = rank 1 (white's first rank)
     
-    std::vector<float> tensor(12 * 8 * 8, 0.0f);
+    std::vector<float> tensor(18 * 8 * 8, 0.0f);
     
+    // Planes 0-11: Pieces
     for (int rank = 0; rank < 8; rank++) {
         for (int file = 0; file < 8; file++) {
             Square sq = Square(Rank(rank), File(file));
@@ -105,6 +113,71 @@ std::vector<float> NeuralNetwork::encode_board(const Board& board) const {
             tensor[tensor_idx] = 1.0f;
         }
     }
+    
+    // Plane 12: Side to move (1.0 for white, 0.0 for black) - full 8x8 plane
+    float side_to_move_value = (board.sideToMove() == Color::WHITE) ? 1.0f : 0.0f;
+    for (int rank = 0; rank < 8; rank++) {
+        for (int file = 0; file < 8; file++) {
+            int idx64 = rank * 8 + file;
+            int tensor_idx = 12 * 64 + idx64;
+            tensor[tensor_idx] = side_to_move_value;
+        }
+    }
+    
+    // Planes 13-16: Castling rights
+    Board::CastlingRights cr = board.castlingRights();
+    
+    // Plane 13: White kingside castling
+    float white_kingside = cr.has(Color::WHITE, Board::CastlingRights::Side::KING_SIDE) ? 1.0f : 0.0f;
+    for (int rank = 0; rank < 8; rank++) {
+        for (int file = 0; file < 8; file++) {
+            int idx64 = rank * 8 + file;
+            int tensor_idx = 13 * 64 + idx64;
+            tensor[tensor_idx] = white_kingside;
+        }
+    }
+    
+    // Plane 14: White queenside castling
+    float white_queenside = cr.has(Color::WHITE, Board::CastlingRights::Side::QUEEN_SIDE) ? 1.0f : 0.0f;
+    for (int rank = 0; rank < 8; rank++) {
+        for (int file = 0; file < 8; file++) {
+            int idx64 = rank * 8 + file;
+            int tensor_idx = 14 * 64 + idx64;
+            tensor[tensor_idx] = white_queenside;
+        }
+    }
+    
+    // Plane 15: Black kingside castling
+    float black_kingside = cr.has(Color::BLACK, Board::CastlingRights::Side::KING_SIDE) ? 1.0f : 0.0f;
+    for (int rank = 0; rank < 8; rank++) {
+        for (int file = 0; file < 8; file++) {
+            int idx64 = rank * 8 + file;
+            int tensor_idx = 15 * 64 + idx64;
+            tensor[tensor_idx] = black_kingside;
+        }
+    }
+    
+    // Plane 16: Black queenside castling
+    float black_queenside = cr.has(Color::BLACK, Board::CastlingRights::Side::QUEEN_SIDE) ? 1.0f : 0.0f;
+    for (int rank = 0; rank < 8; rank++) {
+        for (int file = 0; file < 8; file++) {
+            int idx64 = rank * 8 + file;
+            int tensor_idx = 16 * 64 + idx64;
+            tensor[tensor_idx] = black_queenside;
+        }
+    }
+    
+    // Plane 17: En passant target square
+    Square ep_sq = board.enpassantSq();
+    if (ep_sq != Square::NO_SQ && ep_sq.is_valid()) {
+        // Convert square to rank and file
+        int ep_rank = ep_sq.rank();
+        int ep_file = ep_sq.file();
+        int idx64 = ep_rank * 8 + ep_file;
+        int tensor_idx = 17 * 64 + idx64;
+        tensor[tensor_idx] = 1.0f;
+    }
+    // Otherwise, plane 17 remains all zeros (already initialized)
     
     return tensor;
 }
@@ -141,7 +214,8 @@ bool NeuralNetwork::load_model(const std::string& model_path) {
 
 bool NeuralNetwork::predict(const Board& board,
                             std::map<std::string, double>& policy_out,
-                            double& value_out) {
+                            double& value_out,
+                            double& raw_value_out) {
     // TEST MODE: Deterministic stub for testing MCTS
     if constexpr (USE_NN_STUB) {
         policy_out.clear();
@@ -233,22 +307,10 @@ bool NeuralNetwork::predict(const Board& board,
             // (The parent's policy is stored in the parent node's policy_priors)
         }
         
-        // Value = +1.0 from current player's perspective (winning)
-        // The test requires: "returns value = +1 for the side to move"
-        // So we return +1.0, which means current player is winning
-        // This gets converted to [0,1] range from White's perspective in evaluate()
-        // For White: +1.0 -> 1.0 (White winning)
-        // For Black: +1.0 -> -1.0 (from White's perspective) -> 0.0 (Black winning)
-        // But the test expects the value to always be high, so let's return it in the format
-        // that evaluate() expects: [0, 1] range from White's perspective
-        double raw_value = 1.0;  // Current player is winning
-        
-        // Convert to white's perspective: if Black to move, flip
-        if (board.sideToMove() == Color::BLACK) {
-            raw_value = -raw_value;  // Black winning = -1.0 from White's perspective
-        }
-        // Normalize to [0, 1]: (-1 to +1) -> (0 to 1)
-        value_out = (raw_value + 1.0) / 2.0;
+        // Value = +1.0 from current player's perspective (winning) in [-1, +1] range
+        // Keep in [-1, +1] format - backpropagation will handle perspective flipping
+        raw_value_out = 10.0;  // Raw value (high positive = winning)
+        value_out = 1.0;  // After tanh (tanh(10.0) ≈ 1.0)
         
         // Only log value for root node (starting position) to reduce spam
         if (fen == "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1") {
@@ -267,10 +329,10 @@ bool NeuralNetwork::predict(const Board& board,
         // 1. Encode board to tensor
         std::vector<float> board_tensor_data = encode_board(board);
         
-        // Create torch tensor: shape (1, 12, 8, 8) - batch_size=1, channels=12, height=8, width=8
+        // Create torch tensor: shape (1, 18, 8, 8) - batch_size=1, channels=18, height=8, width=8
         torch::Tensor input_tensor = torch::from_blob(
             board_tensor_data.data(), 
-            {1, 12, 8, 8}, 
+            {1, 18, 8, 8}, 
             torch::kFloat32
         ).clone();  // clone to ensure data persists
         
@@ -282,17 +344,15 @@ bool NeuralNetwork::predict(const Board& board,
         torch::Tensor policy_logits = outputs->elements()[0].toTensor();  // Shape: (1, 4096)
         torch::Tensor value_tensor = outputs->elements()[1].toTensor();   // Shape: (1,)
         
-        // 3. Extract value (convert from [-1, 1] to [0, 1] for white's perspective)
-        double raw_value = value_tensor.item<float>();  // Raw value from model (from current player's perspective)
-        value_out = raw_value;
+        // 3. Extract value and ensure it's in [-1, +1] range using tanh
+        float raw_value = value_tensor.item<float>();  // Raw value from model (may be unbounded)
         
-        // Convert value from current player's perspective to white's perspective
-        if (board.sideToMove() == Color::BLACK) {
-            value_out = -value_out;  // Flip for black
-        }
-        // Now value_out is from white's perspective: 1.0 = white wins, -1.0 = black wins
-        // Convert to [0, 1] range: (value + 1.0) / 2.0
-        value_out = (value_out + 1.0) / 2.0;
+        // Store raw value before tanh
+        raw_value_out = static_cast<double>(raw_value);
+        
+        // Apply tanh to ensure value is in [-1, +1] range
+        // This maps any real number to [-1, +1] and ensures proper win/loss probability
+        value_out = std::tanh(raw_value);
         
         // 4. Extract policy and map to legal moves
         policy_out.clear();
@@ -395,8 +455,8 @@ bool NeuralNetwork::predict(const Board& board,
 
             std::ostringstream value_line1, value_line2;
             value_line1 << "Value (raw from model): " << std::fixed << std::setprecision(4) << raw_value
-                        << " (from " << (board.sideToMove() == Color::WHITE ? "White" : "Black") << "'s perspective)";
-            value_line2 << "Value (normalized to [0,1] from White's perspective): " << std::fixed << std::setprecision(4) << value_out;
+                       << " (from " << (board.sideToMove() == Color::WHITE ? "White" : "Black") << "'s perspective)";
+            value_line2 << "Value (after tanh, in [-1,+1]): " << std::fixed << std::setprecision(4) << value_out;
             log_line(value_line1.str());
             log_line(value_line2.str());
 

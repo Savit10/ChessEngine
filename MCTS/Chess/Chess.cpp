@@ -10,17 +10,20 @@ using namespace std;
 using namespace chess;
 
 // Constructor: Start from initial position
-Chess_state::Chess_state() : MCTS_state(), board_() {
+Chess_state::Chess_state() : MCTS_state(), board_(), last_move_(Move::NO_MOVE), 
+    captured_piece_(Piece::NONE), was_capture_(false) {
     // Board is initialized to starting position by default
 }
 
 // Constructor: Start from FEN string
-Chess_state::Chess_state(const string& fen) : MCTS_state(), board_(fen) {
+Chess_state::Chess_state(const string& fen) : MCTS_state(), board_(fen), 
+    last_move_(Move::NO_MOVE), captured_piece_(Piece::NONE), was_capture_(false) {
 }
 
 // Copy constructor
 Chess_state::Chess_state(const Chess_state& other) 
-    : MCTS_state(other), board_(other.board_) {
+    : MCTS_state(other), board_(other.board_), last_move_(other.last_move_),
+      captured_piece_(other.captured_piece_), was_capture_(other.was_capture_) {
     // chess::Board copy constructor handles everything
 }
 
@@ -37,10 +40,40 @@ MCTS_state* Chess_state::next_state(const MCTS_move* move) const {
     // Create new state by copying current board
     Chess_state* new_state = new Chess_state(*this);
     
+    // Check if this is a capture before applying the move
+    bool is_capture = board_.isCapture(m->move);
+    Piece captured_piece = Piece::NONE;
+    if (is_capture) {
+        captured_piece = board_.at(m->move.to());
+    }
+    
     // Apply the move
     new_state->board_.makeMove(m->move);
     
+    // Store move and capture information
+    new_state->last_move_ = m->move;
+    new_state->was_capture_ = is_capture;
+    new_state->captured_piece_ = captured_piece;
+    
     return new_state;
+}
+
+// Check if the move that led to this state was a capture
+bool Chess_state::was_capture() const {
+    return was_capture_;
+}
+
+int Chess_state::captured_piece_value() const {
+    if (!was_capture_ || captured_piece_ == Piece::NONE) {
+        return 0;
+    }
+    
+    PieceType pt = captured_piece_.type();
+    if (pt == PieceType::QUEEN) return 9;
+    if (pt == PieceType::ROOK) return 5;
+    if (pt == PieceType::BISHOP || pt == PieceType::KNIGHT) return 3;
+    if (pt == PieceType::PAWN) return 1;
+    return 0;
 }
 
 // Get all legal moves
@@ -142,62 +175,9 @@ double Chess_state::rollout() const {
         move_count++;
     }
     
-    // Reached max moves - evaluate position instead of assuming draw
-    // Simple material-based evaluation (can be improved with piece-square tables, etc.)
-    return evaluate_position(sim_board);
-}
-
-// Evaluate position using simple material count
-double Chess_state::evaluate_position(const Board& board) {
-    // Piece values (standard chess values)
-    const int PAWN_VALUE = 100;
-    const int KNIGHT_VALUE = 320;
-    const int BISHOP_VALUE = 330;
-    const int ROOK_VALUE = 500;
-    const int QUEEN_VALUE = 900;
-    const int KING_VALUE = 20000;  // Very high to prioritize king safety
-    
-    int white_material = 0;
-    int black_material = 0;
-    
-    // Count material for each side
-    for (int sq = 0; sq < 64; sq++) {
-        Square square = static_cast<Square>(sq);
-        Piece piece = board.at(square);
-        
-        if (piece == Piece::NONE) continue;
-        
-        int value = 0;
-        PieceType pt = piece.type();
-        
-        if (pt == PieceType::PAWN) value = PAWN_VALUE;
-        else if (pt == PieceType::KNIGHT) value = KNIGHT_VALUE;
-        else if (pt == PieceType::BISHOP) value = BISHOP_VALUE;
-        else if (pt == PieceType::ROOK) value = ROOK_VALUE;
-        else if (pt == PieceType::QUEEN) value = QUEEN_VALUE;
-        else if (pt == PieceType::KING) value = KING_VALUE;
-        
-        if (piece.color() == Color::WHITE) {
-            white_material += value;
-        } else {
-            black_material += value;
-        }
-    }
-    
-    // Convert material difference to [0, 1] range
-    // Normalize: if white is ahead by a lot, return close to 1.0
-    // If black is ahead, return close to 0.0
-    int material_diff = white_material - black_material;
-    
-    // Normalize to [0, 1] using sigmoid-like function
-    // Scale factor: 2000 points difference = ~0.9 or ~0.1
-    double normalized = 0.5 + (material_diff / 2000.0);
-    
-    // Clamp to [0, 1]
-    if (normalized > 1.0) normalized = 1.0;
-    if (normalized < 0.0) normalized = 0.0;
-    
-    return normalized;
+    // Reached max moves - return neutral value (draw)
+    // We don't use material-based heuristics - rely on NN evaluation instead
+    return 0.5;  // Draw/neutral position
 }
 
 // Print the board
