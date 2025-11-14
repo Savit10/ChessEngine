@@ -49,14 +49,17 @@ public:
     bool is_terminal() const;
     const MCTS_move *get_move() const;
     unsigned int get_size() const;
-    void expand(NeuralNetwork* nn = nullptr);  // Pass NN for evaluation
-    void rollout();  // Keep for backward compatibility, but won't be used with NN
+           MCTS_node *expand();
+           double evaluate(NeuralNetwork* nn);
+           void rollout();  // Legacy fallback (used when NN unavailable)
     MCTS_node *select_best_child(double cpuct) const;  // cpuct is the exploration constant
     MCTS_node *advance_tree(const MCTS_move *m);
     const MCTS_state *get_current_state() const;
     void print_stats() const;
     double calculate_winrate(bool player1turn) const;
     double get_prior(const MCTS_move* move) const;  // Get prior probability for a move
+           bool is_evaluated() const { return has_nn_evaluation; }
+           void backpropagate_value(double value) { backpropagate(value, 1); }
 };
 
 

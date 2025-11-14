@@ -201,6 +201,7 @@ int main(int argc, char* argv[]) {
              << setw(10) << fixed << setprecision(0) << (MAX_ITERATIONS / elapsed) << endl;
         
         cout << "     FEN: " << current_board.getFen() << endl;
+        cout << "     Last move: " << san_move << " (" << move_str << ")" << endl;
         
         white_turn = false;
         move_number++;
@@ -309,6 +310,7 @@ int main(int argc, char* argv[]) {
                  << setw(10) << "-" << endl;
             
             cout << "     FEN: " << current_board.getFen() << endl;
+            cout << "     Last move: " << san_move << " (" << move_str << ")" << endl;
             
         } else {
             // Engine's turn
@@ -365,6 +367,7 @@ int main(int argc, char* argv[]) {
             current_board = engine_chess_state_after->get_board();
             
             cout << "     FEN: " << current_board.getFen() << endl;
+            cout << "     Last move: " << san_move << " (" << move_str << ")" << endl;
         }
         
         white_turn = !white_turn;

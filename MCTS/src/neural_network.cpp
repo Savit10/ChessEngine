@@ -12,6 +12,13 @@
 #include <torch/script.h>
 #include <torch/torch.h>
 
+// Test mode: Set to true to use deterministic stub NN for testing MCTS
+static constexpr bool USE_NN_STUB = false;
+
+namespace {
+constexpr bool kEnableNNLogging = false;
+}
+
 NeuralNetwork::NeuralNetwork() : loaded_(false) {
     initialize_move_mapping();
 }
@@ -103,6 +110,13 @@ std::vector<float> NeuralNetwork::encode_board(const Board& board) const {
 }
 
 bool NeuralNetwork::load_model(const std::string& model_path) {
+    // In stub mode, always succeed (don't actually load model)
+    if constexpr (USE_NN_STUB) {
+        loaded_ = true;
+        std::cout << "[NN STUB] Stub mode enabled - model loading skipped" << std::endl;
+        return true;
+    }
+    
     try {
         // Load TorchScript model
         model_ = torch::jit::load(model_path);
@@ -128,6 +142,122 @@ bool NeuralNetwork::load_model(const std::string& model_path) {
 bool NeuralNetwork::predict(const Board& board,
                             std::map<std::string, double>& policy_out,
                             double& value_out) {
+    // TEST MODE: Deterministic stub for testing MCTS
+    if constexpr (USE_NN_STUB) {
+        policy_out.clear();
+        
+        // Get legal moves
+        Movelist legal_moves;
+        movegen::legalmoves(legal_moves, board);
+        
+        if (legal_moves.empty()) {
+            std::cerr << "[NN STUB] No legal moves!" << std::endl;
+            return false;
+        }
+        
+        // DEBUG: Always log all legal moves for root position (White to move, starting FEN)
+        std::string fen = board.getFen();
+        bool is_root = (fen.find("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR") == 0 && 
+                        board.sideToMove() == Color::WHITE &&
+                        board.fullMoveNumber() == 1);
+        
+        if (is_root) {
+            std::cerr << "[NN STUB] ===== ROOT POSITION - ALL LEGAL MOVES =====" << std::endl;
+            std::cerr << "[NN STUB] FEN: " << fen << std::endl;
+            std::cerr << "[NN STUB] Legal moves count: " << legal_moves.size() << std::endl;
+            std::cerr << "[NN STUB] All legal moves:" << std::endl;
+            int move_idx = 0;
+            for (const Move& move : legal_moves) {
+                std::string move_uci = static_cast<std::string>(move.from()) + static_cast<std::string>(move.to());
+                if (move.typeOf() == Move::PROMOTION) {
+                    PieceType pt = move.promotionType();
+                    char promo = 'q';
+                    if (pt == PieceType::KNIGHT) promo = 'n';
+                    else if (pt == PieceType::BISHOP) promo = 'b';
+                    else if (pt == PieceType::ROOK) promo = 'r';
+                    move_uci += promo;
+                }
+                std::cerr << "[NN STUB]   " << std::setw(3) << move_idx++ << ". " << move_uci;
+                if (move_uci == "e2e4") {
+                    std::cerr << " <-- TARGET";
+                }
+                std::cerr << std::endl;
+            }
+            std::cerr << "[NN STUB] ============================================" << std::endl;
+        }
+        
+        // SIMPLIFIED: Only set policy for root position (starting position)
+        // For other positions, return empty policy (MCTS will use uniform prior)
+        if (is_root) {
+            std::string target_move = "e2e4";  // Always try e2e4 first
+            bool found_target = false;
+            
+            // Try to find e2e4
+            for (const Move& move : legal_moves) {
+                std::string move_uci = static_cast<std::string>(move.from()) + static_cast<std::string>(move.to());
+                if (move.typeOf() == Move::PROMOTION) {
+                    PieceType pt = move.promotionType();
+                    char promo = 'q';
+                    if (pt == PieceType::KNIGHT) promo = 'n';
+                    else if (pt == PieceType::BISHOP) promo = 'b';
+                    else if (pt == PieceType::ROOK) promo = 'r';
+                    move_uci += promo;
+                }
+                
+                if (move_uci == target_move) {
+                    policy_out[move_uci] = 1.0;
+                    found_target = true;
+                    std::cerr << "[NN STUB] Root: Found " << target_move << ", setting policy to 1.0" << std::endl;
+                    break;
+                }
+            }
+            
+            // If e2e4 not found, use first legal move (shouldn't happen in starting position)
+            if (!found_target) {
+                const Move& first_move = legal_moves[0];
+                std::string move_uci = static_cast<std::string>(first_move.from()) + static_cast<std::string>(first_move.to());
+                if (first_move.typeOf() == Move::PROMOTION) {
+                    PieceType pt = first_move.promotionType();
+                    char promo = 'q';
+                    if (pt == PieceType::KNIGHT) promo = 'n';
+                    else if (pt == PieceType::BISHOP) promo = 'b';
+                    else if (pt == PieceType::ROOK) promo = 'r';
+                    move_uci += promo;
+                }
+                policy_out[move_uci] = 1.0;
+                std::cerr << "[NN STUB] Root: e2e4 not found! Using first move: " << move_uci << " with prob=1.0" << std::endl;
+            }
+        } else {
+            // For non-root positions, return empty policy (MCTS will use uniform prior)
+            // This is correct - child nodes don't need their own policy, they use the parent's
+            // (The parent's policy is stored in the parent node's policy_priors)
+        }
+        
+        // Value = +1.0 from current player's perspective (winning)
+        // The test requires: "returns value = +1 for the side to move"
+        // So we return +1.0, which means current player is winning
+        // This gets converted to [0,1] range from White's perspective in evaluate()
+        // For White: +1.0 -> 1.0 (White winning)
+        // For Black: +1.0 -> -1.0 (from White's perspective) -> 0.0 (Black winning)
+        // But the test expects the value to always be high, so let's return it in the format
+        // that evaluate() expects: [0, 1] range from White's perspective
+        double raw_value = 1.0;  // Current player is winning
+        
+        // Convert to white's perspective: if Black to move, flip
+        if (board.sideToMove() == Color::BLACK) {
+            raw_value = -raw_value;  // Black winning = -1.0 from White's perspective
+        }
+        // Normalize to [0, 1]: (-1 to +1) -> (0 to 1)
+        value_out = (raw_value + 1.0) / 2.0;
+        
+        // Only log value for root node (starting position) to reduce spam
+        if (fen == "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1") {
+            std::cerr << "[NN STUB] Root node: Side to move: " << (board.sideToMove() == Color::WHITE ? "White" : "Black")
+                      << ", raw_value=+1.0, normalized value=" << value_out << std::endl;
+        }
+        return true;
+    }
+    
     if (!loaded_) {
         std::cerr << "ERROR: Neural network model not loaded. Cannot predict." << std::endl;
         return false;
@@ -226,91 +356,84 @@ bool NeuralNetwork::predict(const Board& board,
             }
         }
         
-        // ========== LOGGING: Policy and Value ==========
-        // Open log file (append mode)
-        static std::ofstream log_file;
-        static bool log_file_opened = false;
-        
-        if (!log_file_opened) {
-            // Create log file with timestamp in name
-            std::time_t now = std::time(nullptr);
-            std::tm* local_time = std::localtime(&now);
-            std::ostringstream filename;
-            filename << "nn_inference_" 
-                     << std::setfill('0') << std::setw(4) << (1900 + local_time->tm_year)
-                     << std::setw(2) << (local_time->tm_mon + 1)
-                     << std::setw(2) << local_time->tm_mday << "_"
-                     << std::setw(2) << local_time->tm_hour
-                     << std::setw(2) << local_time->tm_min
-                     << std::setw(2) << local_time->tm_sec << ".log";
-            log_file.open(filename.str(), std::ios::app);
-            log_file_opened = true;
+        if constexpr (kEnableNNLogging) {
+            static std::ofstream log_file;
+            static bool log_file_opened = false;
+
+            if (!log_file_opened) {
+                std::time_t now = std::time(nullptr);
+                std::tm* local_time = std::localtime(&now);
+                std::ostringstream filename;
+                filename << "nn_inference_"
+                         << std::setfill('0') << std::setw(4) << (1900 + local_time->tm_year)
+                         << std::setw(2) << (local_time->tm_mon + 1)
+                         << std::setw(2) << local_time->tm_mday << "_"
+                         << std::setw(2) << local_time->tm_hour
+                         << std::setw(2) << local_time->tm_min
+                         << std::setw(2) << local_time->tm_sec << ".log";
+                log_file.open(filename.str(), std::ios::app);
+                log_file_opened = true;
+                if (log_file.is_open()) {
+                    log_file << "=== Neural Network Inference Log ===" << std::endl;
+                    log_file << "Started: " << std::asctime(local_time) << std::endl;
+                    log_file << "=====================================" << std::endl << std::endl;
+                }
+            }
+
+            auto log_line = [&](const std::string& line) {
+                std::cerr << line << std::endl;
+                if (log_file.is_open()) {
+                    log_file << line << std::endl;
+                }
+            };
+
+            std::string fen = board.getFen();
+
+            log_line("\n=== NN Inference Results ===");
+            log_line("FEN: " + fen);
+            log_line("Side to move: " + std::string(board.sideToMove() == Color::WHITE ? "White" : "Black"));
+
+            std::ostringstream value_line1, value_line2;
+            value_line1 << "Value (raw from model): " << std::fixed << std::setprecision(4) << raw_value
+                        << " (from " << (board.sideToMove() == Color::WHITE ? "White" : "Black") << "'s perspective)";
+            value_line2 << "Value (normalized to [0,1] from White's perspective): " << std::fixed << std::setprecision(4) << value_out;
+            log_line(value_line1.str());
+            log_line(value_line2.str());
+
+            std::vector<std::pair<std::string, double>> policy_vec(policy_out.begin(), policy_out.end());
+            std::sort(policy_vec.begin(), policy_vec.end(),
+                      [](const std::pair<std::string, double>& a, const std::pair<std::string, double>& b) {
+                          return a.second > b.second;
+                      });
+
+            log_line("Top 15 policy moves:");
+            int top_n = std::min(15, static_cast<int>(policy_vec.size()));
+            for (int i = 0; i < top_n; i++) {
+                std::ostringstream move_line;
+                move_line << "  " << std::setw(2) << (i+1) << ". " << std::setw(6) << policy_vec[i].first
+                          << " : " << std::fixed << std::setprecision(4) << policy_vec[i].second
+                          << " (" << std::fixed << std::setprecision(2) << (policy_vec[i].second * 100.0) << "%)";
+                log_line(move_line.str());
+            }
+
+            if (!policy_vec.empty()) {
+                double max_prob = policy_vec[0].second;
+                double sum_top3 = 0.0;
+                for (int i = 0; i < std::min(3, static_cast<int>(policy_vec.size())); i++) {
+                    sum_top3 += policy_vec[i].second;
+                }
+                std::ostringstream stats_line;
+                stats_line << "Policy stats: max=" << std::fixed << std::setprecision(4) << max_prob
+                           << ", top3_sum=" << std::fixed << std::setprecision(4) << sum_top3
+                           << ", legal_moves=" << legal_moves.size();
+                log_line(stats_line.str());
+            }
+
+            log_line("============================");
+
             if (log_file.is_open()) {
-                log_file << "=== Neural Network Inference Log ===" << std::endl;
-                log_file << "Started: " << std::asctime(local_time) << std::endl;
-                log_file << "=====================================" << std::endl << std::endl;
+                log_file.flush();
             }
-        }
-        
-        // Helper lambda to write to both stderr and file
-        auto log_line = [&](const std::string& line) {
-            std::cerr << line << std::endl;
-            if (log_file.is_open()) {
-                log_file << line << std::endl;
-            }
-        };
-        
-        // Get current FEN for context
-        std::string fen = board.getFen();
-        
-        log_line("\n=== NN Inference Results ===");
-        log_line("FEN: " + fen);
-        log_line("Side to move: " + std::string(board.sideToMove() == Color::WHITE ? "White" : "Black"));
-        
-        // Log value
-        std::ostringstream value_line1, value_line2;
-        value_line1 << "Value (raw from model): " << std::fixed << std::setprecision(4) << raw_value 
-                    << " (from " << (board.sideToMove() == Color::WHITE ? "White" : "Black") << "'s perspective)";
-        value_line2 << "Value (normalized to [0,1] from White's perspective): " << std::fixed << std::setprecision(4) << value_out;
-        log_line(value_line1.str());
-        log_line(value_line2.str());
-        
-        // Log top policy moves
-        std::vector<std::pair<std::string, double>> policy_vec(policy_out.begin(), policy_out.end());
-        std::sort(policy_vec.begin(), policy_vec.end(), 
-                  [](const std::pair<std::string, double>& a, const std::pair<std::string, double>& b) {
-                      return a.second > b.second;
-                  });
-        
-        log_line("Top 15 policy moves:");
-        int top_n = std::min(15, static_cast<int>(policy_vec.size()));
-        for (int i = 0; i < top_n; i++) {
-            std::ostringstream move_line;
-            move_line << "  " << std::setw(2) << (i+1) << ". " << std::setw(6) << policy_vec[i].first 
-                      << " : " << std::fixed << std::setprecision(4) << policy_vec[i].second 
-                      << " (" << std::fixed << std::setprecision(2) << (policy_vec[i].second * 100.0) << "%)";
-            log_line(move_line.str());
-        }
-        
-        // Log policy statistics
-        if (!policy_vec.empty()) {
-            double max_prob = policy_vec[0].second;
-            double sum_top3 = 0.0;
-            for (int i = 0; i < std::min(3, static_cast<int>(policy_vec.size())); i++) {
-                sum_top3 += policy_vec[i].second;
-            }
-            std::ostringstream stats_line;
-            stats_line << "Policy stats: max=" << std::fixed << std::setprecision(4) << max_prob 
-                      << ", top3_sum=" << std::fixed << std::setprecision(4) << sum_top3
-                      << ", legal_moves=" << legal_moves.size();
-            log_line(stats_line.str());
-        }
-        
-        log_line("============================");
-        
-        // Flush file to ensure data is written
-        if (log_file.is_open()) {
-            log_file.flush();
         }
         
         return true;

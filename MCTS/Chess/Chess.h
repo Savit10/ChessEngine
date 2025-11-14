@@ -23,10 +23,10 @@ struct Chess_move : public MCTS_move {
     }
     
     string sprint() const override {
-        // Convert Move to string using UCI format (e.g., "e2e4")
-        Square from = move.from();
-        Square to = move.to();
-        string result = std::string(from) + std::string(to);
+        // Use the same format as neural_network.cpp to ensure exact string matching
+        // static_cast<string>(Square) produces "e2", "e4", etc.
+        string result = static_cast<string>(move.from()) + static_cast<string>(move.to());
+    
         if (move.typeOf() == Move::PROMOTION) {
             PieceType pt = move.promotionType();
             char promo = 'q';
@@ -35,8 +35,10 @@ struct Chess_move : public MCTS_move {
             else if (pt == PieceType::ROOK) promo = 'r';
             result += promo;
         }
+    
         return result;
     }
+    
 };
 
 /**

@@ -37,156 +37,77 @@ MCTS_node::~MCTS_node() {
     delete untried_actions;
 }
 
-void MCTS_node::expand(NeuralNetwork* nn) {
-    if (is_terminal()) {
-        // Terminal node: use actual game result
-        if (!has_nn_evaluation) {
-            // Get result from terminal state
-            Chess_state* chess_state = dynamic_cast<Chess_state*>(state);
-            if (chess_state) {
-                auto [reason, result] = chess_state->get_board().isGameOver();
-                if (result == GameResult::DRAW) {
-                    nn_value = 0.5;
-                } else if (result == GameResult::WIN) {
-                    nn_value = (chess_state->get_board().sideToMove() == Color::WHITE) ? 0.0 : 1.0;
-                } else if (result == GameResult::LOSE) {
-                    nn_value = (chess_state->get_board().sideToMove() == Color::WHITE) ? 1.0 : 0.0;
-                } else {
-                    nn_value = 0.5;
-                }
-            } else {
-                nn_value = state->rollout();  // Fallback to rollout
-            }
-            has_nn_evaluation = true;
-            backpropagate(nn_value, 1);
-        }
-        return;
-    } else if (is_fully_expanded()) {
-        cerr << "Warning: Cannot expand this node any more!" << endl;
-        return;
+MCTS_node *MCTS_node::expand() {
+    if (is_terminal() || untried_actions->empty()) {
+        return nullptr;
     }
-    
-    // If this is a leaf node, evaluate it (either with NN or rollout)
-    if (!has_nn_evaluation && children->empty()) {
-        if (nn != nullptr) {
-            // Try to use neural network
-            Chess_state* chess_state = dynamic_cast<Chess_state*>(state);
-            if (chess_state) {
-                // Call neural network: (policy, value) = f_θ(s)
-                map<string, double> policy_map;
-                double value;
-                
-                if (nn->predict(chess_state->get_board(), policy_map, value)) {
-                    // Store policy priors and value
-                    policy_priors = policy_map;
-                    nn_value = value;
-                    has_nn_evaluation = true;
-                    
-                    // Backpropagate the value immediately
-                    backpropagate(nn_value, 1);
-                } else {
-                    // NN failed, fallback to rollout
-                    cerr << "WARNING: Neural network prediction failed for position. Falling back to heuristic rollout." << endl;
-                    nn_value = state->rollout();
-                    has_nn_evaluation = true;
-                    backpropagate(nn_value, 1);
-                }
-            } else {
-                // Not a chess state, use rollout
-                nn_value = state->rollout();
-                has_nn_evaluation = true;
-                backpropagate(nn_value, 1);
-            }
-        } else {
-            // No NN available, use rollout
-            nn_value = state->rollout();
-            has_nn_evaluation = true;
-            backpropagate(nn_value, 1);
-        }
-    }
-    
-    // Expand one child
-    if (untried_actions->empty()) {
-        return;  // Fully expanded
-    }
-    
-    // Get next untried action
+
     MCTS_move *next_move = untried_actions->front();
     untried_actions->pop();
     MCTS_state *next_state = state->next_state(next_move);
-    
-    // Build new MCTS node
+
     MCTS_node *new_node = new MCTS_node(this, next_state, next_move);
-    
-    // Set prior probability if we have it
-    if (has_nn_evaluation && !policy_priors.empty()) {
-        // Convert move to UCI string to look up prior
-        Chess_move* chess_move = dynamic_cast<Chess_move*>(next_move);
-        if (chess_move) {
-            string move_uci = chess_move->sprint();
-            if (policy_priors.find(move_uci) != policy_priors.end()) {
-                // Prior is already stored in policy_priors map
-                // The child node will access it via get_prior()
-            }
-        }
+    children->push_back(new_node);
+    return new_node;
+}
+
+double MCTS_node::evaluate(NeuralNetwork* nn) {
+    if (has_nn_evaluation) {
+        return nn_value;
     }
-    
-    // Evaluate child node immediately (terminal or non-terminal)
-    if (new_node->is_terminal()) {
-        // Terminal node: use actual game result
-        Chess_state* child_chess_state = dynamic_cast<Chess_state*>(new_node->state);
-        if (child_chess_state) {
-            auto [reason, result] = child_chess_state->get_board().isGameOver();
-            double child_value = 0.5;
+
+    double value = 0.5;
+
+    if (is_terminal()) {
+        Chess_state* chess_state = dynamic_cast<Chess_state*>(state);
+        if (chess_state) {
+            auto [reason, result] = chess_state->get_board().isGameOver();
             if (result == GameResult::DRAW) {
-                child_value = 0.5;
+                value = 0.5;
             } else if (result == GameResult::WIN) {
-                child_value = (child_chess_state->get_board().sideToMove() == Color::WHITE) ? 0.0 : 1.0;
+                value = (chess_state->get_board().sideToMove() == Color::WHITE) ? 0.0 : 1.0;
             } else if (result == GameResult::LOSE) {
-                child_value = (child_chess_state->get_board().sideToMove() == Color::WHITE) ? 1.0 : 0.0;
-            }
-            new_node->nn_value = child_value;
-            new_node->has_nn_evaluation = true;
-            new_node->backpropagate(child_value, 1);
-        }
-    } else {
-        // Non-terminal child: evaluate with rollout (or NN if available)
-        if (nn != nullptr) {
-            // Try NN first
-            Chess_state* child_chess_state = dynamic_cast<Chess_state*>(new_node->state);
-            if (child_chess_state) {
-                map<string, double> policy_map;
-                double value;
-                if (nn->predict(child_chess_state->get_board(), policy_map, value)) {
-                    new_node->policy_priors = policy_map;
-                    new_node->nn_value = value;
-                    new_node->has_nn_evaluation = true;
-                    new_node->backpropagate(value, 1);
-                } else {
-                    // NN failed, use rollout
-                    double rollout_value = new_node->state->rollout();
-                    new_node->nn_value = rollout_value;
-                    new_node->has_nn_evaluation = true;
-                    new_node->backpropagate(rollout_value, 1);
-                }
-            } else {
-                // Not chess state, use rollout
-                double rollout_value = new_node->state->rollout();
-                new_node->nn_value = rollout_value;
-                new_node->has_nn_evaluation = true;
-                new_node->backpropagate(rollout_value, 1);
+                value = (chess_state->get_board().sideToMove() == Color::WHITE) ? 1.0 : 0.0;
             }
         } else {
-            // No NN, use rollout
-            double rollout_value = new_node->state->rollout();
-            new_node->nn_value = rollout_value;
-            new_node->has_nn_evaluation = true;
-            new_node->backpropagate(rollout_value, 1);
+            value = state->rollout();
+        }
+        nn_value = value;
+        has_nn_evaluation = true;
+        return value;
+    }
+
+    if (nn != nullptr) {
+        Chess_state* chess_state = dynamic_cast<Chess_state*>(state);
+        if (chess_state) {
+            map<string, double> policy_map;
+            double network_value;
+            if (nn->predict(chess_state->get_board(), policy_map, network_value)) {
+                policy_priors = policy_map;
+                nn_value = network_value;
+                has_nn_evaluation = true;
+                // Debug: log root node policy (ALWAYS, not just when parent is null, to catch root)
+                static bool root_logged = false;
+                if (parent == nullptr && !root_logged) {
+                    cerr << "[DEBUG] ===== ROOT NODE EVALUATED =====" << endl;
+                    cerr << "[DEBUG] Policy map size: " << policy_map.size() << " entries" << endl;
+                    for (const auto& [move, prob] : policy_map) {
+                        cerr << "[DEBUG]   " << move << ": " << prob << endl;
+                    }
+                    cerr << "[DEBUG] ================================" << endl;
+                    root_logged = true;
+                }
+                return nn_value;
+            } else {
+                cerr << "WARNING: Neural network prediction failed for position. Falling back to heuristic rollout." << endl;
+            }
         }
     }
-    
-    // Add new node to tree
-    children->push_back(new_node);
+
+    value = state->rollout();
+    nn_value = value;
+    has_nn_evaluation = true;
+    return value;
 }
 
 void MCTS_node::rollout() {
@@ -246,65 +167,100 @@ MCTS_node *MCTS_node::select_best_child(double cpuct) const {
         double puct_score, max = -1;
         MCTS_node *argmax = NULL;
         
-        // Calculate sum of visit counts: sum_b N(s,b)
-        unsigned int sum_visits = 0;
-        for (auto *child : *children) {
-            sum_visits += child->number_of_simulations;
+        // DEBUG: Log all Q-values and PUCT scores for root node
+        bool is_root = (parent == nullptr);
+        if (is_root) {
+            cerr << "[DEBUG] ===== SELECTING BEST MOVE FROM ROOT =====" << endl;
+            cerr << "[DEBUG] Parent visits (N_s): " << number_of_simulations << endl;
+            cerr << "[DEBUG] CPUCT: " << cpuct << endl;
+            cerr << "[DEBUG] Children count: " << children->size() << endl;
         }
+        
+        // Store all scores for logging
+        vector<pair<string, tuple<double, double, double, double>>> scores; // move, (Q, P, N_a, puct_score)
         
         for (auto *child : *children) {
             // Q(s,a) = average value (winrate from current player's perspective)
             double Q = 0.0;
             if (child->number_of_simulations > 0) {
                 Q = child->score / ((double) child->number_of_simulations);
-                // If it's opponent's turn, flip the value
-                if (!state->player1_turn()) {
-                    Q = 1.0 - Q;
-                }
             }
             
             // P(s,a) = prior probability from NN
             double P = 0.0;
+            string move_uci = "NULL";
             if (child->move != nullptr) {
+                Chess_move* chess_move = dynamic_cast<Chess_move*>(const_cast<MCTS_move*>(child->move));
+                if (chess_move) {
+                    move_uci = chess_move->sprint();
+                }
                 P = get_prior(child->move);
             }
             // If no prior found, use uniform (1/num_children)
+            double P_original = P;
             if (P == 0.0) {
                 P = 1.0 / children->size();
-                // Log when prior is missing (only once per node to avoid spam)
-                static bool logged_missing_prior = false;
-                if (!logged_missing_prior && parent != nullptr && parent->has_nn_evaluation) {
-                    Chess_move* chess_move = dynamic_cast<Chess_move*>(const_cast<MCTS_move*>(child->move));
-                    if (chess_move) {
-                        cerr << "WARNING: No prior found for move " << chess_move->sprint() 
-                             << ". Using uniform prior. (This may happen for promotions or if NN failed)" << endl;
-                        logged_missing_prior = true;  // Only log once to avoid spam
-                    }
-                }
             }
             
             // N(s,a) = visit count for this child
             unsigned int N_a = child->number_of_simulations;
             
-            // PUCT formula (or UCT if no prior)
-            if (cpuct > 0 && number_of_simulations > 0) {
-                if (P > 0.0) {
+            // N(s) = parent's total visits
+            double parent_visits = (number_of_simulations > 0) ? number_of_simulations : 1;
+            
+            puct_score = Q;
+            if (cpuct > 0) {
+                if (P_original > 0.0) {
                     // PUCT: use prior probability
-                    double sqrt_term = sqrt((double)(sum_visits + 1)) / (1.0 + N_a);
-                    puct_score = Q + cpuct * P * sqrt_term;
+                    double sqrt_term = sqrt(parent_visits) / (1.0 + N_a);
+                    puct_score += cpuct * P_original * sqrt_term;
                 } else {
                     // UCT: no prior, use standard UCB exploration
-                    double sqrt_term = sqrt(log((double)number_of_simulations) / (1.0 + N_a));
-                    puct_score = Q + cpuct * sqrt_term;
+                    double sqrt_term = sqrt(log(parent_visits + 1.0) / (1.0 + N_a));
+                    puct_score += cpuct * sqrt_term;
                 }
-            } else {
-                puct_score = Q;  // Pure exploitation (shouldn't happen with proper cpuct)
+            }
+            
+            if (is_root) {
+                scores.push_back(make_pair(move_uci, make_tuple(Q, P_original, (double)N_a, puct_score)));
             }
             
             if (puct_score > max) {
                 max = puct_score;
                 argmax = child;
             }
+        }
+        
+        // DEBUG: Print all scores for root node
+        if (is_root) {
+            // Sort by PUCT score descending
+            sort(scores.begin(), scores.end(), [](const auto& a, const auto& b) {
+                return get<3>(a.second) > get<3>(b.second);
+            });
+            cerr << "[DEBUG] Move    |    Q    |    P    |  N_a  | PUCT Score" << endl;
+            cerr << "[DEBUG] -------|---------|---------|-------|-----------" << endl;
+            for (const auto& [move, vals] : scores) {
+                double Q = get<0>(vals);
+                double P = get<1>(vals);
+                double N_a = get<2>(vals);
+                double puct = get<3>(vals);
+                cerr << "[DEBUG] " << setw(6) << move << " | " 
+                     << setw(7) << fixed << setprecision(4) << Q << " | "
+                     << setw(7) << fixed << setprecision(4) << P << " | "
+                     << setw(5) << (unsigned int)N_a << " | "
+                     << setw(10) << fixed << setprecision(4) << puct;
+                if (move == "e2e4") {
+                    cerr << " <-- TARGET";
+                }
+                cerr << endl;
+            }
+            if (argmax && argmax->move) {
+                Chess_move* best_move = dynamic_cast<Chess_move*>(const_cast<MCTS_move*>(argmax->move));
+                if (best_move) {
+                    cerr << "[DEBUG] Selected: " << best_move->sprint() << " (PUCT=" << max << ")" << endl;
+                }
+            }
+            cerr << "[DEBUG] ============================================" << endl;
         }
         return argmax;
     }
@@ -364,20 +320,38 @@ MCTS_tree::~MCTS_tree() {
 }
 
 double MCTS_node::get_prior(const MCTS_move* move) const {
-    // Get prior probability for a move from parent's policy_priors
-    if (parent == nullptr || move == nullptr) {
+    // Get prior probability for a move
+    // If we're at the root, look in this->policy_priors
+    // Otherwise, look in parent->policy_priors
+    if (move == nullptr) {
         return 0.0;
     }
     
     // Convert move to UCI string
     Chess_move* chess_move = dynamic_cast<Chess_move*>(const_cast<MCTS_move*>(move));
-    if (chess_move) {
-        string move_uci = chess_move->sprint();
-        auto it = parent->policy_priors.find(move_uci);
-        if (it != parent->policy_priors.end()) {
-            return it->second;
-        }
+    if (!chess_move) {
+        return 0.0;
     }
+    
+    string move_uci = chess_move->sprint();
+    
+    // Determine which policy_priors map to check
+    // If parent is nullptr, we're at root - use this->policy_priors
+    // Otherwise, use parent->policy_priors (the policy was stored when parent was evaluated)
+    const map<string, double>* policy_map = nullptr;
+    bool is_root = (parent == nullptr);
+    
+    if (is_root) {
+        policy_map = &policy_priors;  // Root's own policy
+    } else {
+        policy_map = &(parent->policy_priors);  // Parent's policy (stored when parent was evaluated)
+    }
+    
+    auto it = policy_map->find(move_uci);
+    if (it != policy_map->end()) {
+        return it->second;
+    }
+    
     return 0.0;
 }
 
@@ -390,11 +364,26 @@ void MCTS_tree::grow_tree(int max_iter, double max_time_in_seconds) {
     time_t start_t, now_t;
     time(&start_t);
     for (int i = 0 ; i < max_iter ; i++){
-        // select node to expand according to tree policy
         node = select();
-        // expand it (this will call NN if available, or perform rollout)
-        node->expand(nn_);
-        // check if we need to stop
+        MCTS_node* target = node;
+        double value = 0.5;
+
+        if (node->is_terminal()) {
+            value = node->evaluate(nn_);
+        } else if (!node->is_evaluated()) {
+            value = node->evaluate(nn_);
+        } else {
+            MCTS_node* child = node->expand();
+            if (child == nullptr) {
+                value = node->evaluate(nn_);
+            } else {
+                target = child;
+                value = child->evaluate(nn_);
+            }
+        }
+
+        target->backpropagate_value(value);
+
         time(&now_t);
         dt = difftime(now_t, start_t);
         if (dt > max_time_in_seconds) {
