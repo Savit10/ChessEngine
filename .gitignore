@@ -95,3 +95,18 @@ test_fen
 # Build artifacts
 build/
 cmake-build-*/
+
+/Lichess Elite Database
+/Lichess Elite Database.zip
+/libtorch
+/processed_data
+libtorch-*
+
+# Compiled test/debug executables
+chess_play
+debug_castling
+test_castling
+test_castling_uci
+
+# Captured debug logs
+*.out

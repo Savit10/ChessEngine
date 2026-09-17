@@ -6,15 +6,7 @@ COMMON_OBJ = JobScheduler.o mcts.o neural_network.o
 
 # LibTorch paths (set these after downloading libtorch)
 # Check common locations: Downloads, home directory, or custom path
-ifdef LIBTORCH_PATH
-  # User specified path
-else ifneq ($(wildcard $(HOME)/Downloads/libtorch),)
-  LIBTORCH_PATH = $(HOME)/Downloads/libtorch
-else ifneq ($(wildcard $(HOME)/libtorch),)
-  LIBTORCH_PATH = $(HOME)/libtorch
-else
-  LIBTORCH_PATH = $(HOME)/libtorch  # Default fallback
-endif
+LIBTORCH_PATH = ../libtorch
 
 TORCH_INCLUDE = $(LIBTORCH_PATH)/include
 TORCH_LIB = $(LIBTORCH_PATH)/lib
