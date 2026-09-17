@@ -53,7 +53,23 @@ Move parse_uci_move(const Board& board, const string& uci_str) {
             return Move::make<Move::PROMOTION>(from, to, promo_type);
         }
         
-        // Check if it's castling
+        // Special handling for castling moves - convert UCI to library format
+        // The chess library uses king-to-rook notation, but UCI uses king-to-destination
+        if (from_str == "e1" && to_str == "g1") {
+            // White kingside castling: e1g1 -> e1h1
+            to = Square("h1");
+        } else if (from_str == "e1" && to_str == "c1") {
+            // White queenside castling: e1c1 -> e1a1
+            to = Square("a1");
+        } else if (from_str == "e8" && to_str == "g8") {
+            // Black kingside castling: e8g8 -> e8h8
+            to = Square("h8");
+        } else if (from_str == "e8" && to_str == "c8") {
+            // Black queenside castling: e8c8 -> e8a8
+            to = Square("a8");
+        }
+        
+        // Find matching legal move
         Movelist legal_moves;
         movegen::legalmoves(legal_moves, board);
         
@@ -91,9 +107,9 @@ string get_user_move(const Board& board) {
 int main(int argc, char* argv[]) {
     // Configuration
     const int MAX_ITERATIONS = 5000;
-    const int MAX_SECONDS = 2;
+    const int MAX_SECONDS = 5;
     const int MAX_MOVES = 1000;
-    const double CPUCT = 2.0;
+    const double CPUCT = 1.5;
     
     // Neural network model path
     string model_path = "../aznet_traced.pt";
