@@ -27,8 +27,8 @@ struct MoveStats {
 int main(int argc, char* argv[]) {
     // Configuration
     const int MAX_ITERATIONS = 5000;  // Reduced for faster games
-    const int MAX_SECONDS = 2;         // Reduced for faster games
-    const int MAX_MOVES = 1000;  // Safety limit (game will stop naturally at checkmate/draw before this)
+    const int MAX_SECONDS = 5;         // Reduced for faster games
+    const int MAX_MOVES = 150;  // Safety limit (game will stop naturally at checkmate/draw before this)
     const double CPUCT = 1.0;  // PUCT exploration constant
     
     // Neural network model path (default or from command line)
@@ -237,7 +237,7 @@ int main(int argc, char* argv[]) {
     
     if (move_number > MAX_MOVES) {
         cout << "\n=== Game stopped: Maximum moves reached (safety limit) ===" << endl;
-        cout << "This is unusual - most chess games end before 1000 moves." << endl;
+        cout << "This is unusual - most chess games end before 150 moves." << endl;
     }
     
     // Print summary statistics
