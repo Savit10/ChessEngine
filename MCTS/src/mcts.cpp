@@ -101,12 +101,6 @@ double MCTS_node::evaluate(NeuralNetwork* nn) {
                 // Debug: log root node policy (ALWAYS, not just when parent is null, to catch root)
                 static bool root_logged = false;
                 if (parent == nullptr && !root_logged) {
-                    cerr << "[DEBUG] ===== ROOT NODE EVALUATED =====" << endl;
-                    cerr << "[DEBUG] Policy map size: " << policy_map.size() << " entries" << endl;
-                    for (const auto& [move, prob] : policy_map) {
-                        cerr << "[DEBUG]   " << move << ": " << prob << endl;
-                    }
-                    cerr << "[DEBUG] ================================" << endl;
                     root_logged = true;
                 }
                 return nn_value;
@@ -198,34 +192,17 @@ MCTS_node *MCTS_node::select_best_child(double cpuct) const {
         double puct_score, max = -1;
         MCTS_node *argmax = NULL;
         
-        // DEBUG: Log all Q-values and PUCT scores for root node
-        bool is_root = (parent == nullptr);
-        if (is_root) {
-            cerr << "[DEBUG] ===== SELECTING BEST MOVE FROM ROOT =====" << endl;
-            cerr << "[DEBUG] Parent visits (N_s): " << number_of_simulations << endl;
-            cerr << "[DEBUG] CPUCT: " << cpuct << endl;
-            cerr << "[DEBUG] Children count: " << children->size() << endl;
-        }
-        
-        // Store all scores for logging
-        vector<pair<string, tuple<double, double, double, double>>> scores; // move, (Q, P, N_a, puct_score)
-        
         for (auto *child : *children) {
             // Q(s,a) = average value from current player's perspective in [-1, +1] range
             // +1.0 = current player winning, -1.0 = current player losing, 0.0 = draw
             double Q = 0.0;
             if (child->number_of_simulations > 0) {
-                Q = child->score / ((double) child->number_of_simulations);
+                Q = -child->score / ((double) child->number_of_simulations);
             }
             
             // P(s,a) = prior probability from NN
             double P = 0.0;
-            string move_uci = "NULL";
             if (child->move != nullptr) {
-                Chess_move* chess_move = dynamic_cast<Chess_move*>(const_cast<MCTS_move*>(child->move));
-                if (chess_move) {
-                    move_uci = chess_move->sprint();
-                }
                 P = get_prior(child->move);
             }
             // If no prior found, use uniform (1/num_children)
@@ -253,47 +230,12 @@ MCTS_node *MCTS_node::select_best_child(double cpuct) const {
                 }
             }
             
-            if (is_root) {
-                scores.push_back(make_pair(move_uci, make_tuple(Q, P_original, (double)N_a, puct_score)));
-            }
-            
             if (puct_score > max) {
                 max = puct_score;
                 argmax = child;
             }
         }
         
-        // DEBUG: Print all scores for root node
-        if (is_root) {
-            // Sort by PUCT score descending
-            sort(scores.begin(), scores.end(), [](const auto& a, const auto& b) {
-                return get<3>(a.second) > get<3>(b.second);
-            });
-            cerr << "[DEBUG] Move    |    Q    |    P    |  N_a  | PUCT Score" << endl;
-            cerr << "[DEBUG] -------|---------|---------|-------|-----------" << endl;
-            for (const auto& [move, vals] : scores) {
-                double Q = get<0>(vals);
-                double P = get<1>(vals);
-                double N_a = get<2>(vals);
-                double puct = get<3>(vals);
-                cerr << "[DEBUG] " << setw(6) << move << " | " 
-                     << setw(7) << fixed << setprecision(4) << Q << " | "
-                     << setw(7) << fixed << setprecision(4) << P << " | "
-                     << setw(5) << (unsigned int)N_a << " | "
-                     << setw(10) << fixed << setprecision(4) << puct;
-                if (move == "e2e4") {
-                    cerr << " <-- TARGET";
-                }
-                cerr << endl;
-            }
-            if (argmax && argmax->move) {
-                Chess_move* best_move = dynamic_cast<Chess_move*>(const_cast<MCTS_move*>(argmax->move));
-                if (best_move) {
-                    cerr << "[DEBUG] Selected: " << best_move->sprint() << " (PUCT=" << max << ")" << endl;
-                }
-            }
-            cerr << "[DEBUG] ============================================" << endl;
-        }
         return argmax;
     }
 }
@@ -387,14 +329,13 @@ double MCTS_node::get_prior(const MCTS_move* move) const {
     return 0.0;
 }
 
-void MCTS_tree::grow_tree(int max_iter, double max_time_in_seconds) {
+int MCTS_tree::grow_tree(int max_iter, double max_time_in_seconds) {
     MCTS_node *node;
     double dt;
-    #ifdef DEBUG
-    cout << "Growing tree..." << endl;
-    #endif
     time_t start_t, now_t;
     time(&start_t);
+    int iterations_completed = 0;
+    
     for (int i = 0 ; i < max_iter ; i++){
         node = select();
         MCTS_node* target = node;
@@ -415,21 +356,25 @@ void MCTS_tree::grow_tree(int max_iter, double max_time_in_seconds) {
         }
 
         target->backpropagate_value(value);
+        iterations_completed = i + 1;
 
         time(&now_t);
         dt = difftime(now_t, start_t);
         if (dt > max_time_in_seconds) {
             #ifdef DEBUG
-            cout << "Early stopping: Made " << (i + 1) << " iterations in " << dt << " seconds." << endl;
+            cout << "Early stopping: Made " << iterations_completed << " iterations in " << dt << " seconds." << endl;
             #endif
             break;
         }
     }
+    
     #ifdef DEBUG
     time(&now_t);
     dt = difftime(now_t, start_t);
-    cout << "Finished in " << dt << " seconds." << endl;
+    cout << "Completed " << iterations_completed << " iterations in " << dt << " seconds." << endl;
     #endif
+    
+    return iterations_completed;
 }
 
 unsigned int MCTS_tree::get_size() const {
@@ -529,11 +474,71 @@ const MCTS_move *MCTS_agent::genmove(const MCTS_move *enemy_move) {
     if (tree->get_current_state()->is_terminal()) {
         return NULL;
     }
-    #ifdef DEBUG
-    cout << "___ DEBUG ______________________" << endl
-         << "Growing tree..." << endl;
-    #endif
-    tree->grow_tree(max_iter, max_seconds);
+    int actual_iterations = tree->grow_tree(max_iter, max_seconds);
+    
+    // Print final iteration analysis with /p /q data
+    MCTS_node* root = tree->get_root();
+    if (root && root->get_children() && !root->get_children()->empty()) {
+        // Store all scores for logging
+        vector<pair<string, tuple<double, double, double, double>>> scores; // move, (Q, P, N_a, puct_score)
+        
+        for (auto *child : *root->get_children()) {
+            double Q = 0.0;
+            if (child->get_number_of_simulations() > 0) {
+                Q = -child->get_score() / ((double) child->get_number_of_simulations());
+            }
+            
+            string move_uci = "NULL";
+            if (child->get_move() != nullptr) {
+                Chess_move* chess_move = dynamic_cast<Chess_move*>(const_cast<MCTS_move*>(child->get_move()));
+                if (chess_move) {
+                    move_uci = chess_move->sprint();
+                }
+            }
+            
+            double P = root->get_prior(child->get_move());
+            unsigned int N_a = child->get_number_of_simulations();
+            
+            // Calculate PUCT score (same logic as select_best_child)
+            double parent_visits = (root->get_number_of_simulations() > 0) ? root->get_number_of_simulations() : 1;
+            double P_original = P;
+            if (P == 0.0) {
+                P = 1.0 / root->get_children()->size();
+            }
+            
+            double puct_score = Q;
+            if (P_original > 0.0) {
+                double sqrt_term = sqrt(parent_visits) / (1.0 + N_a);
+                puct_score += 1.0 * P_original * sqrt_term;  // Using cpuct=1.0 for display
+            } else {
+                double sqrt_term = sqrt(log(parent_visits + 1.0) / (1.0 + N_a));
+                puct_score += 1.0 * sqrt_term;
+            }
+            
+            scores.push_back(make_pair(move_uci, make_tuple(Q, P_original, (double)N_a, puct_score)));
+        }
+        
+        // Sort by PUCT score descending
+        sort(scores.begin(), scores.end(), [](const auto& a, const auto& b) {
+            return get<3>(a.second) > get<3>(b.second);
+        });
+        
+        cerr << "[FINAL] Iterations completed: " << actual_iterations << endl;
+        cerr << "[FINAL] Move    |    Q    |    P    |  N_a  | PUCT Score" << endl;
+        cerr << "[FINAL] --------|---------|---------|-------|-----------" << endl;
+        for (const auto& [move, vals] : scores) {
+            double Q = get<0>(vals);
+            double P = get<1>(vals);
+            double N_a = get<2>(vals);
+            double puct = get<3>(vals);
+            cerr << "[FINAL] " << setw(7) << move << " | " 
+                 << setw(7) << fixed << setprecision(4) << Q << " | "
+                 << setw(7) << fixed << setprecision(4) << P << " | "
+                 << setw(5) << (unsigned int)N_a << " | "
+                 << setw(10) << fixed << setprecision(4) << puct << endl;
+        }
+    }
+    
     #ifdef DEBUG
     cout << "Tree size: " << tree->get_size() << endl
          << "________________________________" << endl;
@@ -544,6 +549,14 @@ const MCTS_move *MCTS_agent::genmove(const MCTS_move *enemy_move) {
         return NULL;
     }
     const MCTS_move *best_move = best_child->get_move();
+    
+    if (best_child->get_move()) {
+        Chess_move* selected_move = dynamic_cast<Chess_move*>(const_cast<MCTS_move*>(best_child->get_move()));
+        if (selected_move) {
+            cerr << "[FINAL] Selected: " << selected_move->sprint() << endl;
+        }
+    }
+    
     tree->advance_tree(best_move);
     return best_move;
 }
